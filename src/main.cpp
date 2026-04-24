@@ -14,7 +14,12 @@
 #include <vector>
 
 #include "base64.h"
+#if __has_include("secrets.h")
 #include "secrets.h"
+#else
+#include "secrets.example.h"
+#endif
+#include "zero_buddy_core.h"
 
 namespace {
 constexpr int kLedPin = 10;
@@ -1330,77 +1335,19 @@ bool parseAsrServerPayload(const std::vector<uint8_t>& frame_payload,
                            bool* final_out,
                            String* text_out,
                            String* error_out) {
-  if (frame_payload.size() < 4) {
-    *error_out = "short asr frame";
+  const auto parsed =
+      zero_buddy::parseAsrServerPayload(frame_payload.data(), frame_payload.size());
+  if (!parsed.ok) {
+    *error_out = parsed.error.c_str();
     return false;
   }
-  const uint8_t byte1 = frame_payload[1];
-  const uint8_t msg_type = (byte1 >> 4) & 0x0f;
-  const uint8_t msg_flags = byte1 & 0x0f;
-  const uint8_t byte2 = frame_payload[2];
-  const uint8_t compression = byte2 & 0x0f;
-  if (compression != 0) {
-    *error_out = "gzip not supported";
-    return false;
-  }
-
-  if (msg_type == 0x0f) {
-    if (frame_payload.size() < 12) {
-      *error_out = "short asr err";
-      return false;
-    }
-    const uint32_t code = (frame_payload[4] << 24) | (frame_payload[5] << 16) |
-                          (frame_payload[6] << 8) | frame_payload[7];
-    const uint32_t size = (frame_payload[8] << 24) | (frame_payload[9] << 16) |
-                          (frame_payload[10] << 8) | frame_payload[11];
-    if (12 + size > frame_payload.size()) {
-      *error_out = "bad asr err";
-      return false;
-    }
-    *error_out = "asr err " + String(code) + " " +
-                 String(reinterpret_cast<const char*>(frame_payload.data() + 12), size);
-    return false;
-  }
-
-  if (msg_type != 0x09 || frame_payload.size() < 12) {
-    *error_out = "unexpected asr msg";
-    return false;
-  }
-
-  const uint32_t payload_size = (frame_payload[8] << 24) | (frame_payload[9] << 16) |
-                                (frame_payload[10] << 8) | frame_payload[11];
-  if (12 + payload_size > frame_payload.size()) {
-    *error_out = "bad asr payload";
-    return false;
-  }
-  const String json(reinterpret_cast<const char*>(frame_payload.data() + 12), payload_size);
-  Serial.println("ASR WS raw response:");
-  Serial.println(json);
-  const String result_text = extractNestedResultText(json);
-  const String result_array_text = extractFirstResultArrayText(json);
-  const String top_level_text = extractJsonString(json, "text");
-  const String utterance_text = extractFirstUtteranceText(json);
-  Serial.printf("ASR parsed result.text: %s\n", result_text.c_str());
-  Serial.printf("ASR parsed result[0].text: %s\n", result_array_text.c_str());
-  Serial.printf("ASR parsed top-level text: %s\n", top_level_text.c_str());
-  Serial.printf("ASR parsed utterance text: %s\n", utterance_text.c_str());
-  String text = result_text;
-  if (text.isEmpty()) {
-    text = result_array_text;
-  }
-  if (text.isEmpty()) {
-    text = utterance_text;
-  }
-  if (text.isEmpty()) {
-    text = top_level_text;
-  }
-  if (!text.isEmpty()) {
-    Serial.printf("ASR chosen text: %s\n", text.c_str());
-    *text_out = text;
+  if (!parsed.text.empty()) {
+    *text_out = parsed.text.c_str();
+    Serial.printf("ASR chosen text: %s\n", text_out->c_str());
   } else {
     Serial.println("ASR chosen text: <empty>");
   }
-  *final_out = (msg_flags == 0x03);
+  *final_out = parsed.final;
   Serial.printf("ASR frame final=%d\n", *final_out ? 1 : 0);
   return true;
 }
@@ -1427,26 +1374,7 @@ bool readHttpStatusAndBody(const String& raw, int* status_out, String* body_out)
 }
 
 String decodeChunkedBody(const String& body) {
-  String out;
-  int cursor = 0;
-  while (cursor < body.length()) {
-    const int line_end = body.indexOf("\r\n", cursor);
-    if (line_end < 0) {
-      return body;
-    }
-    const String size_hex = body.substring(cursor, line_end);
-    const int chunk_size = static_cast<int>(strtol(size_hex.c_str(), nullptr, 16));
-    cursor = line_end + 2;
-    if (chunk_size <= 0) {
-      break;
-    }
-    if (cursor + chunk_size > body.length()) {
-      return body;
-    }
-    out += body.substring(cursor, cursor + chunk_size);
-    cursor += chunk_size + 2;
-  }
-  return out;
+  return String(zero_buddy::decodeChunkedBody(body.c_str()).c_str());
 }
 
 void beepTone(int freq_hz, int duration_ms) {
@@ -1473,39 +1401,12 @@ void beepAssistantReady() {
 bool parseZeroMessagesResponse(const String& body,
                                String* newest_message_id_out,
                                std::vector<String>* assistant_messages_out) {
-  int cursor = 0;
-  bool found_any = false;
-  while (true) {
-    const int id_pos = body.indexOf("{\"id\":\"", cursor);
-    if (id_pos < 0) {
-      break;
-    }
-    const int created_pos = body.indexOf("\"createdAt\":\"", id_pos);
-    if (created_pos < 0) {
-      break;
-    }
-    const int created_end = body.indexOf("\"", created_pos + 13);
-    if (created_end < 0) {
-      break;
-    }
-    const int obj_end = body.indexOf("}", created_end);
-    if (obj_end < 0) {
-      break;
-    }
-    const String item = body.substring(id_pos, obj_end + 1);
-    const String id = extractJsonString(item, "id");
-    const String role = extractJsonString(item, "role");
-    const String content = extractJsonString(item, "content");
-    if (!id.isEmpty()) {
-      *newest_message_id_out = id;
-      found_any = true;
-    }
-    if (role == "assistant" && !content.isEmpty()) {
-      assistant_messages_out->push_back(preprocessAssistantForDisplay(content));
-    }
-    cursor = obj_end + 1;
+  const auto parsed = zero_buddy::parseZeroMessagesResponse(body.c_str());
+  *newest_message_id_out = parsed.newest_message_id.c_str();
+  for (const auto& msg : parsed.assistant_messages) {
+    assistant_messages_out->push_back(String(msg.c_str()));
   }
-  return found_any;
+  return parsed.found_any;
 }
 
 String generateRequestId() {
@@ -2109,16 +2010,8 @@ bool sendStreamAudioChunk(const uint8_t* data, size_t data_len, bool is_final, S
     *error_out = "asr not active";
     return false;
   }
-  std::vector<uint8_t> packet;
-  packet.reserve(data_len + 8);
-  packet.push_back(0x11);
-  packet.push_back(is_final ? 0x22 : 0x20);
-  packet.push_back(0x00);
-  packet.push_back(0x00);
-  appendU32(&packet, data_len);
-  if (data_len > 0 && data != nullptr) {
-    packet.insert(packet.end(), data, data + data_len);
-  }
+  const std::vector<uint8_t> packet =
+      zero_buddy::buildStreamAudioPacket(data, data_len, is_final);
   return wsSendBinaryFrame(&g_asr_session.target_tls->ssl, packet.data(), packet.size(), error_out);
 }
 

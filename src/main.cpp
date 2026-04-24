@@ -40,6 +40,7 @@ constexpr uint8_t kScreenBrightnessLevelCount =
 constexpr uint8_t kDefaultScreenBrightnessLevel = 2;
 constexpr int kScreenWidth = 240;
 constexpr int kScreenHeight = 135;
+constexpr int kUiOffsetX = 1;
 constexpr int kAnimFrameMs = 180;
 constexpr int kReplyBubbleX = 122;
 constexpr int kReplyBubbleY = 18;
@@ -47,12 +48,12 @@ constexpr int kReplyBubbleW = 108;
 constexpr int kReplyBubbleH = 86;
 constexpr int kReplyLineHeight = 13;
 constexpr int kReplyVisibleLines = 5;
-constexpr int kBodyTop = 44;
-constexpr int kBodyLeft = 8;
-constexpr int kBodyWidth = 224;
-constexpr int kBodyHeight = 82;
+constexpr int kBodyTop = 12;
+constexpr int kBodyLeft = 5;
+constexpr int kBodyWidth = 229;
+constexpr int kBodyHeight = 108;
 constexpr int kBodyLineHeight = 16;
-constexpr int kBodyVisibleLines = 5;
+constexpr int kBodyVisibleLines = 6;
 constexpr int kSampleRate = 16000;
 constexpr size_t kReadLen = 512;
 constexpr size_t kStreamChunkBytes = kSampleRate * 2 / 5;  // 200ms PCM16 mono
@@ -1192,6 +1193,7 @@ void resetMessageScroll() {
 
 void rebuildCurrentMessageLayout() {
   g_current_message_lines.clear();
+  M5.Display.setFont(&fonts::efontCN_14);
   const String pending = currentPendingAssistantMessage();
   if (pending.isEmpty()) {
     return;
@@ -1213,7 +1215,7 @@ void rebuildCurrentMessageLayout() {
       int best = start + 1;
       for (int end = start + 1; end <= paragraph.length(); ++end) {
         String candidate = paragraph.substring(start, end);
-        if (M5.Display.textWidth(candidate) > (kReplyBubbleW - 16)) {
+        if (M5.Display.textWidth(candidate) > (kBodyWidth - 16)) {
           break;
         }
         best = end;
@@ -1250,8 +1252,8 @@ void rebuildCurrentMessageLayout() {
 }
 
 bool canScrollCurrentAssistantMessage() {
-  return g_current_message_lines.size() > static_cast<size_t>(kReplyVisibleLines) &&
-         g_scroll_line + kReplyVisibleLines < g_current_message_lines.size();
+  return g_current_message_lines.size() > static_cast<size_t>(kBodyVisibleLines) &&
+         g_scroll_line + kBodyVisibleLines < g_current_message_lines.size();
 }
 
 void handleAssistantAdvance(bool force_next) {
@@ -2542,69 +2544,65 @@ void drawUiFrame() {
   display.setRotation(3);
   display.fillScreen(TFT_BLACK);
   const bool normal_mode = g_test_mode == TestMode::Normal;
-  display.fillRect(0, 0, kScreenWidth, 20, normal_mode ? TFT_BLACK : TFT_DARKGREY);
-  display.fillRect(0, 20, kScreenWidth, 20, normal_mode ? TFT_BLACK : TFT_NAVY);
-  display.drawRect(0, 0, kScreenWidth, kScreenHeight, TFT_WHITE);
-
   display.setTextWrap(false);
-  display.setTextColor(TFT_WHITE, normal_mode ? TFT_BLACK : TFT_DARKGREY);
-  if (normal_mode) {
-    display.setFont(&fonts::Font0);
-  } else {
-    display.setFont(&fonts::Font2);
-  }
-  display.setCursor(6, 4);
-  display.print(normal_mode ? "M5 Normal" : "M5 Test Bench");
-  display.setFont(&fonts::Font0);
-  display.setTextColor(TFT_LIGHTGREY, normal_mode ? TFT_BLACK : TFT_DARKGREY);
-  display.setCursor(198, 5);
-  display.printf("BL%s", screenBrightnessLabel().c_str());
 
-  display.setTextColor(TFT_WHITE, normal_mode ? TFT_BLACK : TFT_NAVY);
-  display.setFont(&fonts::Font0);
-  display.setCursor(8, 26);
-  display.printf("WiFi:%s", g_wifi_connected ? "OK" : "OFF");
-  display.setCursor(74, 26);
-  display.printf("IP:%s", trimToWidth(g_ip_address, 12).c_str());
-  if (!normal_mode) {
-    display.setCursor(166, 26);
-    display.printf("Mode:%s", currentTestModeLabel());
+  if (normal_mode && g_wifi_connecting) {
+    display.setTextColor(TFT_CYAN, TFT_BLACK);
+    display.setFont(&fonts::efontCN_14);
+    display.setCursor(kUiOffsetX + 48, 50);
+    display.print("Wi-Fi connecting");
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.setCursor(kUiOffsetX + 58, 72);
+    display.print("please wait");
+    display.setTextWrap(true);
+    return;
   }
 
-  display.setTextColor(TFT_YELLOW, TFT_BLACK);
-  display.setFont(&fonts::Font2);
-  display.setCursor(8, 44);
-  display.printf("%s", trimToWidth(g_status, 18).c_str());
+  if (normal_mode && !g_wifi_connected) {
+    display.setTextColor(TFT_RED, TFT_BLACK);
+    display.setFont(&fonts::efontCN_14);
+    display.setCursor(kUiOffsetX + 76, 50);
+    display.print("No Wi-Fi");
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.setCursor(kUiOffsetX + 44, 72);
+    display.print("retrying automatically");
+    display.setTextWrap(true);
+    return;
+  }
 
-  display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  display.setFont(&fonts::Font0);
-  display.setCursor(8, 62);
   const String pending = currentPendingAssistantMessage();
   if (normal_mode && !pending.isEmpty()) {
-    display.printf("%s", canScrollCurrentAssistantMessage() ? "BtnA next line" : "BtnA next msg");
-    display.drawRect(kBodyLeft - 2, 78, kBodyWidth + 4, 49, TFT_CYAN);
+    display.drawRoundRect(kUiOffsetX + kBodyLeft, kBodyTop, kBodyWidth, kBodyHeight, 6, TFT_DARKCYAN);
     display.setTextColor(TFT_WHITE, TFT_BLACK);
     display.setFont(&fonts::efontCN_14);
     const size_t start = min(g_scroll_line, g_current_message_lines.size());
     const size_t end = min(start + static_cast<size_t>(kBodyVisibleLines), g_current_message_lines.size());
-    int y = 84;
+    int y = kBodyTop + 8;
     for (size_t i = start; i < end; ++i) {
-      display.setCursor(kBodyLeft, y);
+      display.setCursor(kUiOffsetX + kBodyLeft + 8, y);
       display.print(g_current_message_lines[i]);
       y += kBodyLineHeight;
     }
     display.setFont(&fonts::Font0);
     display.setTextColor(TFT_CYAN, TFT_BLACK);
-    display.setCursor(184, 122);
+    display.setCursor(kUiOffsetX + kScreenWidth - 48, kScreenHeight - 11);
     display.printf("%u/%u",
                    static_cast<unsigned>(min(g_scroll_line + 1, g_current_message_lines.size())),
                    static_cast<unsigned>(g_current_message_lines.size()));
   } else {
-    display.printf("%s", normal_mode ? "Hold BtnA, BtnB light" : "BtnA run, hold BtnB mode");
-    display.drawRect(kBodyLeft - 2, 78, kBodyWidth + 4, 49, normal_mode ? TFT_WHITE : TFT_DARKGREEN);
+    display.setTextColor(TFT_YELLOW, TFT_BLACK);
+    display.setFont(&fonts::Font2);
+    display.setCursor(kUiOffsetX + 8, 22);
+    display.printf("%s", trimToWidth(g_status, 24).c_str());
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.setFont(&fonts::Font0);
+    display.setCursor(kUiOffsetX + 8, 48);
+    display.printf("%s", normal_mode ? "Hold BtnA to talk" : "BtnA run, hold BtnB mode");
+    display.drawRoundRect(kUiOffsetX + kBodyLeft, 72, kBodyWidth, 48, 6,
+                          normal_mode ? TFT_DARKGREY : TFT_DARKGREEN);
     display.setTextColor(TFT_WHITE, TFT_BLACK);
     display.setFont(&fonts::efontCN_14);
-    display.setCursor(kBodyLeft, 84);
+    display.setCursor(kUiOffsetX + kBodyLeft + 8, 84);
     display.printf("%s", trimToWidth(g_result, 60).c_str());
   }
   display.setTextWrap(true);

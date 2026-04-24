@@ -138,6 +138,113 @@ uint32_t readU32(const uint8_t* p) {
 
 }  // namespace
 
+FixedByteQueue::FixedByteQueue(uint8_t* storage, size_t capacity)
+    : storage_(storage), capacity_(capacity), head_(0), size_(0), dropped_bytes_(0) {}
+
+size_t FixedByteQueue::pushNewest(const uint8_t* data, size_t data_len) {
+  if (storage_ == nullptr || capacity_ == 0 || data == nullptr || data_len == 0) {
+    return 0;
+  }
+
+  if (data_len >= capacity_) {
+    dropped_bytes_ += size_ + (data_len - capacity_);
+    memcpy(storage_, data + data_len - capacity_, capacity_);
+    head_ = 0;
+    size_ = capacity_;
+    return capacity_;
+  }
+
+  if (size_ + data_len > capacity_) {
+    const size_t to_drop = size_ + data_len - capacity_;
+    head_ = (head_ + to_drop) % capacity_;
+    size_ -= to_drop;
+    dropped_bytes_ += to_drop;
+  }
+
+  size_t tail = (head_ + size_) % capacity_;
+  size_t written = 0;
+  while (written < data_len) {
+    const size_t contiguous = std::min(data_len - written, capacity_ - tail);
+    memcpy(storage_ + tail, data + written, contiguous);
+    tail = (tail + contiguous) % capacity_;
+    written += contiguous;
+  }
+  size_ += data_len;
+  return data_len;
+}
+
+size_t FixedByteQueue::pop(uint8_t* out, size_t max_len) {
+  if (storage_ == nullptr || capacity_ == 0 || out == nullptr || max_len == 0 || size_ == 0) {
+    return 0;
+  }
+  const size_t to_read = std::min(max_len, size_);
+  size_t read = 0;
+  while (read < to_read) {
+    const size_t contiguous = std::min(to_read - read, capacity_ - head_);
+    memcpy(out + read, storage_ + head_, contiguous);
+    head_ = (head_ + contiguous) % capacity_;
+    read += contiguous;
+  }
+  size_ -= to_read;
+  if (size_ == 0) {
+    head_ = 0;
+  }
+  return to_read;
+}
+
+void FixedByteQueue::clear() {
+  head_ = 0;
+  size_ = 0;
+  dropped_bytes_ = 0;
+}
+
+size_t FixedByteQueue::size() const {
+  return size_;
+}
+
+size_t FixedByteQueue::capacity() const {
+  return capacity_;
+}
+
+size_t FixedByteQueue::droppedBytes() const {
+  return dropped_bytes_;
+}
+
+AsrCaptureAssessment assessAsrCapture(AsrCaptureStrategy strategy,
+                                      const AsrCaptureMetrics& metrics) {
+  AsrCaptureAssessment assessment;
+  if (metrics.recorded_bytes == 0) {
+    assessment.reason = "empty audio";
+    return assessment;
+  }
+
+  if (strategy == AsrCaptureStrategy::FlashReplay) {
+    if (metrics.flash_failed) {
+      assessment.reason = "flash failed";
+      return assessment;
+    }
+    if (metrics.flash_bytes != metrics.recorded_bytes) {
+      assessment.reason = "flash mismatch";
+      return assessment;
+    }
+    assessment.input_complete = true;
+  } else {
+    if (metrics.dropped_bytes != 0) {
+      assessment.reason = "backlog dropped";
+      return assessment;
+    }
+    assessment.input_complete = true;
+  }
+
+  if (metrics.sent_bytes != metrics.recorded_bytes) {
+    assessment.reason = "sent mismatch";
+    return assessment;
+  }
+  assessment.upload_complete = true;
+  assessment.reason = "complete";
+  return assessment;
+}
+
 std::string trim(std::string value) {
   const auto begin = std::find_if_not(value.begin(), value.end(), isSpace);
   const auto end = std::find_if_not(value.rbegin(), value.rend(), isSpace).base();
@@ -325,6 +432,15 @@ std::string decodeChunkedBody(std::string body) {
   return out;
 }
 
+ZeroMessage parseZeroMessageObject(std::string object) {
+  ZeroMessage message;
+  message.id = extractJsonString(object, "id");
+  message.role = extractJsonString(object, "role");
+  message.content = extractJsonString(object, "content");
+  message.ok = !message.id.empty();
+  return message;
+}
+
 ZeroMessagesResult parseZeroMessagesResponse(std::string body) {
   ZeroMessagesResult result;
   size_t cursor = 0;
@@ -346,15 +462,13 @@ ZeroMessagesResult parseZeroMessagesResponse(std::string body) {
       break;
     }
     const std::string item = body.substr(id_pos, obj_end - id_pos + 1);
-    const std::string id = extractJsonString(item, "id");
-    const std::string role = extractJsonString(item, "role");
-    const std::string content = extractJsonString(item, "content");
-    if (!id.empty()) {
-      result.newest_message_id = id;
+    const ZeroMessage message = parseZeroMessageObject(item);
+    if (!message.id.empty()) {
+      result.newest_message_id = message.id;
       result.found_any = true;
     }
-    if (role == "assistant" && !content.empty()) {
-      result.assistant_messages.push_back(preprocessAssistantForDisplay(content));
+    if (message.role == "assistant" && !message.content.empty()) {
+      result.assistant_messages.push_back(preprocessAssistantForDisplay(message.content));
     }
     cursor = obj_end + 1;
   }

@@ -58,6 +58,8 @@ constexpr unsigned long kAsrRecordConnectWaitMs = 9000;
 constexpr size_t kMicRecordSamplesPerRead = 256;
 constexpr unsigned long kMicTestDurationMs = 1500;
 constexpr unsigned long kAsrTestDurationMs = 2000;
+constexpr uint32_t kAssistantLedBlinkIntervalMs = 3000;
+constexpr uint32_t kAssistantLedBlinkPulseMs = 120;
 
 constexpr char kAsrWsHost[] = "openspeech.bytedance.com";
 constexpr uint16_t kAsrWsPort = 443;
@@ -121,6 +123,7 @@ unsigned long g_last_anim_ms = 0;
 size_t g_scroll_line = 0;
 std::vector<String> g_current_message_lines;
 bool g_flash_store_ready = false;
+zero_buddy::NotificationBlinkState g_assistant_led_blink;
 
 enum class TestMode : uint8_t {
   Normal = 0,
@@ -458,11 +461,11 @@ void nextTestMode() {
   g_test_mode = static_cast<TestMode>(next);
 }
 
-bool isAsyncAsrCaptureTestMode() {
+bool usesAsyncAsrCaptureMode() {
   return g_test_mode == TestMode::AsrLive || g_test_mode == TestMode::AsrFlash;
 }
 
-bool isLiveAsrCaptureTestMode() {
+bool usesAsyncLiveAsrMode() {
   return g_test_mode == TestMode::AsrLive;
 }
 
@@ -1000,6 +1003,33 @@ void releaseNetworkTask(NetworkTask task) {
     Serial.printf("NETWORK release %s\n", networkTaskLabel(task));
     g_network_task = NetworkTask::None;
   }
+}
+
+void setStatusLed(bool on) {
+  digitalWrite(kLedPin, on ? LOW : HIGH);
+}
+
+void applyAssistantLedBlinkEvent(zero_buddy::NotificationBlinkEvent event) {
+  const auto result = zero_buddy::updateNotificationBlink(&g_assistant_led_blink,
+                                                          event,
+                                                          static_cast<uint32_t>(millis()),
+                                                          kAssistantLedBlinkIntervalMs,
+                                                          kAssistantLedBlinkPulseMs);
+  if (result.led_changed) {
+    setStatusLed(result.led_on);
+  }
+}
+
+void serviceAssistantLedBlink() {
+  applyAssistantLedBlinkEvent(zero_buddy::NotificationBlinkEvent::Tick);
+}
+
+void notifyAssistantMessageArrived() {
+  applyAssistantLedBlinkEvent(zero_buddy::NotificationBlinkEvent::AssistantArrived);
+}
+
+void clearAssistantLedBlinkForUserAction() {
+  applyAssistantLedBlinkEvent(zero_buddy::NotificationBlinkEvent::UserAction);
 }
 
 void resetMessageScroll() {
@@ -1805,7 +1835,9 @@ void beepToneAsync(int freq_hz, int duration_ms) {
 }
 
 void beepListenStart() {
-  beepToneAsync(1760, 40);
+  // Keep this synchronous. If the mic/network path blocks after starting a PWM tone,
+  // the async stop in loop() cannot run and the startup beep turns into a long tone.
+  beepTone(1760, 35);
 }
 
 void beepSendStop() {
@@ -2277,6 +2309,9 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
     g_zero_last_seen_message_id = newest_message_id;
   }
   if (!baseline_only) {
+    if (added_count > 0) {
+      notifyAssistantMessageArrived();
+    }
     if (added_count > 0 && before_count == 0) {
       g_pending_message_index = 0;
       g_waiting_for_assistant = true;
@@ -3099,6 +3134,17 @@ void startAsrFlashTest() {
   startAsyncAsrCaptureTest(true);
 }
 
+void startNormalConversationCapture() {
+  closeRecordFlash();
+  g_record_to_flash = true;
+  g_record_flash_failed = false;
+  g_record_flash_bytes = 0;
+  startRecording();
+  g_status = "recording";
+  g_result = "local capture";
+  drawUiFrame();
+}
+
 void finishAsyncAsrCaptureTest(bool flash_replay) {
   g_recording = false;
   closeRecordFlash();
@@ -3173,6 +3219,8 @@ void finishAsrFlashTest() {
 
 void finishNormalConversation() {
   g_recording = false;
+  closeRecordFlash();
+  g_record_to_flash = false;
   beepSendStop();
   g_uploading = true;
   g_status = "recognizing";
@@ -3191,13 +3239,30 @@ void finishNormalConversation() {
 
   String error;
   String text;
-  bool ok = ensureAsrSessionStarted(&error) && transcribeRecordedBuffer(&text, &error);
+  const bool flash_complete =
+      !g_record_flash_failed && g_record_flash_bytes == g_recorded_bytes && g_record_flash_bytes > 0;
+  g_record_sent_bytes = 0;
+  g_stream_chunk_fill = 0;
+  g_asr_chunks_sent = 0;
+  g_last_asr_chunk_sent_ms = 0;
+  const unsigned long asr_begin_ms = millis();
+  bool ok = flash_complete && transcribeFlashRecording(&text, &error);
+  const unsigned long asr_elapsed_ms = millis() - asr_begin_ms;
+  if (!flash_complete) {
+    error = g_record_flash_failed ? "record flash failed" : "record flash incomplete";
+  }
   String normalized_text = text;
   normalized_text.trim();
   if (ok && normalized_text.isEmpty()) {
     ok = false;
     error = "empty asr text";
   }
+  const unsigned long connect_ms = asr_elapsed_ms;
+  updateLastAsrCaptureMetrics(connect_ms);
+  const auto assessment = zero_buddy::assessAsrCapture(
+      zero_buddy::AsrCaptureStrategy::FlashReplay,
+      currentAsrCaptureMetrics());
+  logAsrCaptureMetrics("NORMAL ASR FLASH", connect_ms, assessment);
 
   releaseAudioResources();
   g_uploading = false;
@@ -3284,10 +3349,7 @@ void startCurrentTest() {
   clearAssistantMessages();
   switch (g_test_mode) {
     case TestMode::Normal:
-      startRecording();
-      g_status = "recording";
-      g_result = "release BtnA";
-      drawUiFrame();
+      startNormalConversationCapture();
       break;
     case TestMode::Mic:
       startRecording();
@@ -3411,6 +3473,17 @@ void loop() {
     }
   }
 
+  const bool btn_a_pressed = M5.BtnA.wasPressed();
+  const bool btn_a_released = M5.BtnA.wasReleased();
+  const bool btn_a_held = M5.BtnA.wasHold();
+  const bool btn_b_pressed = M5.BtnB.wasPressed();
+  const bool btn_b_released = M5.BtnB.wasReleased();
+  const bool btn_b_held = M5.BtnB.wasHold();
+  if (btn_a_pressed || btn_a_released || btn_a_held ||
+      btn_b_pressed || btn_b_released || btn_b_held) {
+    clearAssistantLedBlinkForUserAction();
+  }
+
   size_t bytes_read = 0;
   if (g_recording && M5.Mic.isEnabled()) {
     const bool got =
@@ -3418,7 +3491,7 @@ void loop() {
     bytes_read = got ? (kMicRecordSamplesPerRead * sizeof(int16_t)) : 0;
   }
 
-  if (M5.BtnB.wasPressed() && !g_recording && !g_uploading) {
+  if (btn_b_pressed && !g_recording && !g_uploading) {
     nextTestMode();
     g_status = (g_test_mode == TestMode::Normal) ? "ready" : "test bench";
     g_result = (g_test_mode == TestMode::Normal) ? String("hold BtnA to record")
@@ -3426,7 +3499,7 @@ void loop() {
     drawUiFrame();
   }
 
-  if (M5.BtnA.wasPressed() && !g_recording && !g_uploading) {
+  if (btn_a_pressed && !g_recording && !g_uploading) {
     if (g_test_mode == TestMode::Normal && !currentPendingAssistantMessage().isEmpty()) {
       handleAssistantAdvance(false);
       drawUiFrame();
@@ -3435,7 +3508,7 @@ void loop() {
     }
   }
 
-  if (g_test_mode == TestMode::Normal && M5.BtnA.wasHold() && !g_recording && !g_uploading &&
+  if (g_test_mode == TestMode::Normal && btn_a_held && !g_recording && !g_uploading &&
       !currentPendingAssistantMessage().isEmpty()) {
     handleAssistantAdvance(true);
     drawUiFrame();
@@ -3454,10 +3527,9 @@ void loop() {
     if (g_record_to_flash && !writeRecordFlash(g_audio_buffer, bytes_read)) {
       Serial.println("record flash write failed");
     }
-    const bool async_asr_mode = isAsyncAsrCaptureTestMode();
-    const bool async_live_asr_mode = isLiveAsrCaptureTestMode();
-    const bool sync_asr_mode =
-        (g_test_mode == TestMode::Normal || g_test_mode == TestMode::Asr);
+    const bool async_asr_mode = usesAsyncAsrCaptureMode();
+    const bool async_live_asr_mode = usesAsyncLiveAsrMode();
+    const bool sync_asr_mode = g_test_mode == TestMode::Asr;
     if (async_asr_mode && g_asr_connect_state == AsrConnectState::Failed) {
       Serial.printf("ASR async connect failed while recording: %s\n", g_asr_connect_error);
       g_recording = false;
@@ -3514,23 +3586,17 @@ void loop() {
     }
   }
 
-  if (g_recording && g_test_mode == TestMode::Normal && M5.BtnA.wasReleased()) {
+  if (g_recording && g_test_mode == TestMode::Normal && btn_a_released) {
     finishNormalConversation();
   }
 
-  if (g_recording && g_test_mode == TestMode::AsrLive && M5.BtnA.wasReleased()) {
+  if (g_recording && g_test_mode == TestMode::AsrLive && btn_a_released) {
     finishAsrLiveTest();
   }
 
-  if (g_recording && g_test_mode == TestMode::AsrFlash && M5.BtnA.wasReleased()) {
+  if (g_recording && g_test_mode == TestMode::AsrFlash && btn_a_released) {
     finishAsrFlashTest();
   }
 
-  static unsigned long last_blink = 0;
-  static bool led_on = false;
-  if (millis() - last_blink > 300) {
-    last_blink = millis();
-    led_on = !led_on;
-    digitalWrite(kLedPin, led_on ? LOW : HIGH);
-  }
+  serviceAssistantLedBlink();
 }

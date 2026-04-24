@@ -136,6 +136,10 @@ uint32_t readU32(const uint8_t* p) {
          static_cast<uint32_t>(p[3]);
 }
 
+bool timeReached(uint32_t now_ms, uint32_t deadline_ms) {
+  return static_cast<int32_t>(now_ms - deadline_ms) >= 0;
+}
+
 }  // namespace
 
 FixedByteQueue::FixedByteQueue(uint8_t* storage, size_t capacity)
@@ -243,6 +247,46 @@ AsrCaptureAssessment assessAsrCapture(AsrCaptureStrategy strategy,
   assessment.upload_complete = true;
   assessment.reason = "complete";
   return assessment;
+}
+
+NotificationBlinkResult updateNotificationBlink(NotificationBlinkState* state,
+                                                NotificationBlinkEvent event,
+                                                uint32_t now_ms,
+                                                uint32_t interval_ms,
+                                                uint32_t pulse_ms) {
+  NotificationBlinkResult result;
+  if (state == nullptr) {
+    return result;
+  }
+
+  const bool previous_led = state->led_on;
+  if (event == NotificationBlinkEvent::AssistantArrived) {
+    state->pending = true;
+    state->led_on = true;
+    state->last_pulse_ms = now_ms;
+    state->led_off_at_ms = now_ms + pulse_ms;
+  } else if (event == NotificationBlinkEvent::UserAction) {
+    state->pending = false;
+    state->led_on = false;
+    state->last_pulse_ms = now_ms;
+    state->led_off_at_ms = now_ms;
+  } else if (!state->pending) {
+    state->led_on = false;
+  } else {
+    if (state->led_on && timeReached(now_ms, state->led_off_at_ms)) {
+      state->led_on = false;
+    }
+    if (!state->led_on && timeReached(now_ms, state->last_pulse_ms + interval_ms)) {
+      state->led_on = true;
+      state->last_pulse_ms = now_ms;
+      state->led_off_at_ms = now_ms + pulse_ms;
+    }
+  }
+
+  result.pending = state->pending;
+  result.led_on = state->led_on;
+  result.led_changed = previous_led != state->led_on;
+  return result;
 }
 
 std::string trim(std::string value) {

@@ -109,11 +109,63 @@ void test_asr_capture_strategy_assessment() {
   TEST_ASSERT_EQUAL_STRING("flash mismatch", flash_lossy.reason.c_str());
 }
 
+void test_notification_blink_state_machine() {
+  zero_buddy::NotificationBlinkState state;
+  auto result = zero_buddy::updateNotificationBlink(
+      &state, zero_buddy::NotificationBlinkEvent::Tick, 1000, 3000, 120);
+  TEST_ASSERT_FALSE(result.pending);
+  TEST_ASSERT_FALSE(result.led_on);
+  TEST_ASSERT_FALSE(result.led_changed);
+
+  result = zero_buddy::updateNotificationBlink(
+      &state, zero_buddy::NotificationBlinkEvent::AssistantArrived, 2000, 3000, 120);
+  TEST_ASSERT_TRUE(result.pending);
+  TEST_ASSERT_TRUE(result.led_on);
+  TEST_ASSERT_TRUE(result.led_changed);
+
+  result = zero_buddy::updateNotificationBlink(
+      &state, zero_buddy::NotificationBlinkEvent::Tick, 2119, 3000, 120);
+  TEST_ASSERT_TRUE(result.pending);
+  TEST_ASSERT_TRUE(result.led_on);
+  TEST_ASSERT_FALSE(result.led_changed);
+
+  result = zero_buddy::updateNotificationBlink(
+      &state, zero_buddy::NotificationBlinkEvent::Tick, 2120, 3000, 120);
+  TEST_ASSERT_TRUE(result.pending);
+  TEST_ASSERT_FALSE(result.led_on);
+  TEST_ASSERT_TRUE(result.led_changed);
+
+  result = zero_buddy::updateNotificationBlink(
+      &state, zero_buddy::NotificationBlinkEvent::Tick, 4999, 3000, 120);
+  TEST_ASSERT_TRUE(result.pending);
+  TEST_ASSERT_FALSE(result.led_on);
+  TEST_ASSERT_FALSE(result.led_changed);
+
+  result = zero_buddy::updateNotificationBlink(
+      &state, zero_buddy::NotificationBlinkEvent::Tick, 5000, 3000, 120);
+  TEST_ASSERT_TRUE(result.pending);
+  TEST_ASSERT_TRUE(result.led_on);
+  TEST_ASSERT_TRUE(result.led_changed);
+
+  result = zero_buddy::updateNotificationBlink(
+      &state, zero_buddy::NotificationBlinkEvent::UserAction, 5050, 3000, 120);
+  TEST_ASSERT_FALSE(result.pending);
+  TEST_ASSERT_FALSE(result.led_on);
+  TEST_ASSERT_TRUE(result.led_changed);
+
+  result = zero_buddy::updateNotificationBlink(
+      &state, zero_buddy::NotificationBlinkEvent::Tick, 9000, 3000, 120);
+  TEST_ASSERT_FALSE(result.pending);
+  TEST_ASSERT_FALSE(result.led_on);
+  TEST_ASSERT_FALSE(result.led_changed);
+}
+
 }  // namespace
 
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_memory_safe_conversation_pipeline);
   RUN_TEST(test_asr_capture_strategy_assessment);
+  RUN_TEST(test_notification_blink_state_machine);
   return UNITY_END();
 }

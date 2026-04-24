@@ -49,6 +49,25 @@ struct AsrCaptureAssessment {
   }
 };
 
+enum class NotificationBlinkEvent : uint8_t {
+  Tick,
+  AssistantArrived,
+  UserAction,
+};
+
+struct NotificationBlinkState {
+  bool pending = false;
+  bool led_on = false;
+  uint32_t last_pulse_ms = 0;
+  uint32_t led_off_at_ms = 0;
+};
+
+struct NotificationBlinkResult {
+  bool pending = false;
+  bool led_on = false;
+  bool led_changed = false;
+};
+
 class FixedByteQueue {
  public:
   FixedByteQueue(uint8_t* storage, size_t capacity);
@@ -84,5 +103,10 @@ std::vector<uint8_t> buildStreamAudioPacket(const uint8_t* data, size_t data_len
 AsrPayloadResult parseAsrServerPayload(const uint8_t* frame_payload, size_t frame_payload_size);
 AsrCaptureAssessment assessAsrCapture(AsrCaptureStrategy strategy,
                                       const AsrCaptureMetrics& metrics);
+NotificationBlinkResult updateNotificationBlink(NotificationBlinkState* state,
+                                                NotificationBlinkEvent event,
+                                                uint32_t now_ms,
+                                                uint32_t interval_ms,
+                                                uint32_t pulse_ms);
 
 }  // namespace zero_buddy

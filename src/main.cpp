@@ -909,6 +909,71 @@ String preprocessAssistantForDisplay(String text) {
   return out;
 }
 
+bool chatFontHasGlyph(uint32_t cp) {
+  if (cp == '\n' || cp == ' ') {
+    return true;
+  }
+  if (cp > 0xFFFF) {
+    return false;
+  }
+  lgfx::FontMetrics metrics;
+  return fonts::efontCN_14.updateFontMetric(&metrics, static_cast<uint16_t>(cp));
+}
+
+String filterTextForChatFont(const String& text, size_t* missing_glyphs_out) {
+  String out;
+  out.reserve(text.length());
+  bool last_was_space = false;
+  bool last_was_newline = false;
+  size_t missing = 0;
+
+  for (size_t i = 0; i < text.length();) {
+    uint32_t cp = 0;
+    const size_t n = decodeUtf8Codepoint(text, i, &cp);
+    if (cp == '\n') {
+      if (!last_was_newline) {
+        out += '\n';
+      }
+      last_was_newline = true;
+      last_was_space = false;
+      i += n;
+      continue;
+    }
+    if (cp == '\t') {
+      cp = ' ';
+    }
+    if (cp == ' ') {
+      if (!last_was_space && !last_was_newline) {
+        out += ' ';
+      }
+      last_was_space = true;
+      i += n;
+      continue;
+    }
+    if (chatFontHasGlyph(cp)) {
+      out += text.substring(i, i + n);
+      last_was_space = false;
+      last_was_newline = false;
+    } else {
+      ++missing;
+      if (!last_was_space && !last_was_newline) {
+        out += ' ';
+        last_was_space = true;
+      }
+    }
+    i += n;
+  }
+
+  out = collapseWhitespace(out);
+  out.replace("\n ", "\n");
+  out.replace(" \n", "\n");
+  out.trim();
+  if (missing_glyphs_out != nullptr) {
+    *missing_glyphs_out = missing;
+  }
+  return out.isEmpty() ? "[empty reply]" : out;
+}
+
 bool isMostlyAscii(const String& text) {
   if (text.isEmpty()) {
     return true;
@@ -2055,8 +2120,14 @@ bool parseZeroMessagesFileToFlash(bool baseline_only,
     if (g_pending_assistant_count >= kMaxPendingAssistantMessages) {
       return;
     }
-    const String display_text =
+    const String preprocessed_text =
         zero_buddy::preprocessAssistantForDisplay(message.content).c_str();
+    size_t missing_glyphs = 0;
+    const String display_text = filterTextForChatFont(preprocessed_text, &missing_glyphs);
+    if (missing_glyphs > 0) {
+      Serial.printf("assistant display missing glyphs: %u\n",
+                    static_cast<unsigned>(missing_glyphs));
+    }
     String save_error;
     if (saveAssistantMessageToFlash(g_pending_assistant_count, display_text, &save_error)) {
       ++g_pending_assistant_count;

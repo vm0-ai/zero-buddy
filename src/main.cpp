@@ -27,6 +27,20 @@
 #endif
 #include "zero_buddy_core.h"
 
+#ifndef ZERO_BUDDY_SERIAL_LOGS
+#define ZERO_BUDDY_SERIAL_LOGS 0
+#endif
+
+#if ZERO_BUDDY_SERIAL_LOGS
+#define ZB_SERIAL_BEGIN(...) Serial.begin(__VA_ARGS__)
+#define ZB_LOG_PRINTF(...) Serial.printf(__VA_ARGS__)
+#define ZB_LOG_PRINTLN(...) Serial.println(__VA_ARGS__)
+#else
+#define ZB_SERIAL_BEGIN(...) do {} while (0)
+#define ZB_LOG_PRINTF(...) do {} while (0)
+#define ZB_LOG_PRINTLN(...) do {} while (0)
+#endif
+
 namespace {
 constexpr int kLedPin = 10;
 constexpr int kBuzzerPin = 2;
@@ -641,7 +655,7 @@ void cycleScreenBrightness() {
   applyScreenBrightness();
   g_status = "backlight";
   g_result = "level " + screenBrightnessLabel();
-  Serial.printf("Backlight level %s value=%u\n",
+  ZB_LOG_PRINTF("Backlight level %s value=%u\n",
                 screenBrightnessLabel().c_str(),
                 static_cast<unsigned>(currentScreenBrightnessValue()));
 }
@@ -655,7 +669,7 @@ void wakeScreen(bool user_action, const char* reason) {
   }
   applyScreenBrightness();
   if (!was_awake) {
-    Serial.printf("Power wake: %s\n", reason != nullptr ? reason : "unknown");
+    ZB_LOG_PRINTF("Power wake: %s\n", reason != nullptr ? reason : "unknown");
   }
   if (user_action) {
     clearAssistantLedBlinkForUserAction();
@@ -667,7 +681,7 @@ void enterScreenSleep(const char* reason) {
   if (!g_power.screen_awake || g_recording || g_uploading) {
     return;
   }
-  Serial.printf("Power sleep: %s\n", reason != nullptr ? reason : "idle");
+  ZB_LOG_PRINTF("Power sleep: %s\n", reason != nullptr ? reason : "idle");
   zero_buddy::sleepPowerWindow(&g_power);
   ledcWriteTone(0, 0);
   g_buzzer_stop_ms = 0;
@@ -724,7 +738,7 @@ void runLightSleepIfIdle() {
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
   if (sleep_err != ESP_OK) {
-    Serial.printf("Power light sleep failed: %d\n", static_cast<int>(sleep_err));
+    ZB_LOG_PRINTF("Power light sleep failed: %d\n", static_cast<int>(sleep_err));
     return;
   }
   if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) {
@@ -1183,7 +1197,7 @@ bool loadCurrentAssistantMessage(String* error_out) {
 }
 
 void logHeap(const char* tag) {
-  Serial.printf("HEAP %s free=%u min=%u cap_free=%u cap_min=%u largest=%u\n",
+  ZB_LOG_PRINTF("HEAP %s free=%u min=%u cap_free=%u cap_min=%u largest=%u\n",
                 tag,
                 static_cast<unsigned>(ESP.getFreeHeap()),
                 static_cast<unsigned>(ESP.getMinFreeHeap()),
@@ -1207,19 +1221,19 @@ const char* networkTaskLabel(NetworkTask task) {
 bool acquireNetworkTask(NetworkTask task, String* error_out) {
   if (g_network_task != NetworkTask::None && g_network_task != task) {
     *error_out = String("network busy: ") + networkTaskLabel(g_network_task);
-    Serial.printf("NETWORK acquire %s failed, owner=%s\n",
+    ZB_LOG_PRINTF("NETWORK acquire %s failed, owner=%s\n",
                   networkTaskLabel(task),
                   networkTaskLabel(g_network_task));
     return false;
   }
   g_network_task = task;
-  Serial.printf("NETWORK acquire %s\n", networkTaskLabel(task));
+  ZB_LOG_PRINTF("NETWORK acquire %s\n", networkTaskLabel(task));
   return true;
 }
 
 void releaseNetworkTask(NetworkTask task) {
   if (g_network_task == task) {
-    Serial.printf("NETWORK release %s\n", networkTaskLabel(task));
+    ZB_LOG_PRINTF("NETWORK release %s\n", networkTaskLabel(task));
     g_network_task = NetworkTask::None;
   }
 }
@@ -1351,7 +1365,7 @@ void advancePendingAssistantMessage() {
   } else {
     String load_error;
     if (!loadCurrentAssistantMessage(&load_error)) {
-      Serial.printf("assistant load failed: %s\n", load_error.c_str());
+      ZB_LOG_PRINTF("assistant load failed: %s\n", load_error.c_str());
     }
     g_status = "assistant reply";
     g_result = "BtnA next";
@@ -1465,7 +1479,7 @@ bool configureClientTls(TlsContext* ctx, bool insecure, String* error_out) {
 }
 
 bool connectSocket(const char* host, uint16_t port, int* out_fd, String* error_out) {
-  Serial.printf("SOCKET connect begin: %s:%u\n", host, static_cast<unsigned>(port));
+  ZB_LOG_PRINTF("SOCKET connect begin: %s:%u\n", host, static_cast<unsigned>(port));
   logHeap("socket connect begin");
   IPAddress ip;
   if (!WiFi.hostByName(host, ip)) {
@@ -1532,7 +1546,7 @@ bool handshakeTlsOnSocket(TlsContext* ctx,
                           const char* hostname,
                           bool insecure,
                           String* error_out) {
-  Serial.printf("TLS socket handshake begin: %s\n", hostname);
+  ZB_LOG_PRINTF("TLS socket handshake begin: %s\n", hostname);
   logHeap("tls socket hs begin");
   if (!seedTlsContext(ctx, hostname, error_out)) {
     return false;
@@ -1563,7 +1577,7 @@ bool handshakeTlsOverTls(TlsContext* inner,
                          TlsContext* outer,
                          const char* hostname,
                          String* error_out) {
-  Serial.printf("TLS nested handshake begin: %s\n", hostname);
+  ZB_LOG_PRINTF("TLS nested handshake begin: %s\n", hostname);
   logHeap("tls nested hs begin");
   if (!seedTlsContext(inner, hostname, error_out)) {
     return false;
@@ -1594,7 +1608,7 @@ bool handshakeTlsOverTlsWithDeadline(TlsContext* inner,
                                      const char* hostname,
                                      unsigned long deadline_ms,
                                      String* error_out) {
-  Serial.printf("TLS nested handshake begin: %s\n", hostname);
+  ZB_LOG_PRINTF("TLS nested handshake begin: %s\n", hostname);
   logHeap("tls nested hs begin");
   if (!seedTlsContext(inner, hostname, error_out)) {
     return false;
@@ -1663,7 +1677,7 @@ bool tlsWriteParts(mbedtls_ssl_context* ssl,
                    const std::vector<String>& parts,
                    String* error_out) {
   for (size_t i = 0; i < parts.size(); ++i) {
-    Serial.printf("TLS write part %u len=%u\n",
+    ZB_LOG_PRINTF("TLS write part %u len=%u\n",
                   static_cast<unsigned>(i),
                   static_cast<unsigned>(parts[i].length()));
     if (!tlsWriteAll(ssl, parts[i], error_out)) {
@@ -1799,12 +1813,12 @@ bool parseAsrServerPayload(const std::vector<uint8_t>& frame_payload,
   }
   if (!parsed.text.empty()) {
     *text_out = parsed.text.c_str();
-    Serial.printf("ASR chosen text: %s\n", text_out->c_str());
+    ZB_LOG_PRINTF("ASR chosen text: %s\n", text_out->c_str());
   } else {
-    Serial.println("ASR chosen text: <empty>");
+    ZB_LOG_PRINTLN("ASR chosen text: <empty>");
   }
   *final_out = parsed.final;
-  Serial.printf("ASR frame final=%d\n", *final_out ? 1 : 0);
+  ZB_LOG_PRINTF("ASR frame final=%d\n", *final_out ? 1 : 0);
   return true;
 }
 
@@ -2035,7 +2049,7 @@ bool readHttpResponseToSink(mbedtls_ssl_context* ssl,
   if (body_file) {
     body_file.close();
   }
-  Serial.printf("ZERO response body bytes: %u storage=%s\n",
+  ZB_LOG_PRINTF("ZERO response body bytes: %u storage=%s\n",
                 static_cast<unsigned>(sink.bytes),
                 body_file_path == nullptr ? "ram" : "flash");
   return true;
@@ -2125,7 +2139,7 @@ bool parseZeroMessagesFileToFlash(bool baseline_only,
     size_t missing_glyphs = 0;
     const String display_text = filterTextForChatFont(preprocessed_text, &missing_glyphs);
     if (missing_glyphs > 0) {
-      Serial.printf("assistant display missing glyphs: %u\n",
+      ZB_LOG_PRINTF("assistant display missing glyphs: %u\n",
                     static_cast<unsigned>(missing_glyphs));
     }
     String save_error;
@@ -2133,7 +2147,7 @@ bool parseZeroMessagesFileToFlash(bool baseline_only,
       ++g_pending_assistant_count;
       ++(*added_count_out);
     } else {
-      Serial.printf("assistant save failed: %s\n", save_error.c_str());
+      ZB_LOG_PRINTF("assistant save failed: %s\n", save_error.c_str());
     }
   };
 
@@ -2310,7 +2324,7 @@ bool zeroProxyRequest(const String& method,
   const unsigned long deadline = millis() + kZeroRequestDeadlineMs;
   const bool show_ui_stages = (method == "POST");
   auto zeroStage = [&](const char* stage) {
-    Serial.printf("ZERO stage: %s\n", stage);
+    ZB_LOG_PRINTF("ZERO stage: %s\n", stage);
     logHeap(stage);
     if (show_ui_stages) {
       g_status = "sending zero";
@@ -2364,8 +2378,8 @@ bool zeroProxyRequest(const String& method,
   const int connect_hdr_end = connect_raw.indexOf("\r\n\r\n");
   const String connect_headers =
       connect_hdr_end >= 0 ? connect_raw.substring(0, connect_hdr_end) : connect_raw;
-  Serial.println("ZERO proxy CONNECT response:");
-  Serial.println(connect_headers);
+  ZB_LOG_PRINTLN("ZERO proxy CONNECT response:");
+  ZB_LOG_PRINTLN(connect_headers);
   if (connect_error.length() > 0) {
     *error_out = connect_error;
     cleanup("zero cleanup proxy connect read fail");
@@ -2426,16 +2440,16 @@ bool zeroProxyRequest(const String& method,
   }
 
   if (read_error.length() > 0) {
-    Serial.printf("ZERO read tail: %s\n", read_error.c_str());
+    ZB_LOG_PRINTF("ZERO read tail: %s\n", read_error.c_str());
   }
   cleanup("zero cleanup success");
 
-  Serial.printf("ZERO HTTP code: %d\n", *code_out);
+  ZB_LOG_PRINTF("ZERO HTTP code: %d\n", *code_out);
   if (response_file_path == nullptr) {
-    Serial.printf("ZERO response RAM bytes: %u\n", static_cast<unsigned>(response_out->length()));
-    Serial.println(trimToWidth(*response_out, 320));
+    ZB_LOG_PRINTF("ZERO response RAM bytes: %u\n", static_cast<unsigned>(response_out->length()));
+    ZB_LOG_PRINTLN(trimToWidth(*response_out, 320));
   } else {
-    Serial.printf("ZERO response file: %s\n", response_file_path);
+    ZB_LOG_PRINTF("ZERO response file: %s\n", response_file_path);
   }
   return true;
 }
@@ -2456,13 +2470,13 @@ bool postTextToZero(const String& prompt, String* sent_message_id_out, String* e
       String("{\"prompt\":\"") + jsonEscape(normalized) + "\",\"threadId\":\"" +
       kZeroThreadId + "\"}";
 
-  Serial.printf("ZERO prompt length: %u\n", static_cast<unsigned>(normalized.length()));
-  Serial.println("ZERO prompt preview:");
-  Serial.println(trimToWidth(normalized, 120));
-  Serial.println("ZERO prompt hex:");
-  Serial.println(hexPreview(normalized, 48));
-  Serial.println("ZERO request body:");
-  Serial.println(body);
+  ZB_LOG_PRINTF("ZERO prompt length: %u\n", static_cast<unsigned>(normalized.length()));
+  ZB_LOG_PRINTLN("ZERO prompt preview:");
+  ZB_LOG_PRINTLN(trimToWidth(normalized, 120));
+  ZB_LOG_PRINTLN("ZERO prompt hex:");
+  ZB_LOG_PRINTLN(hexPreview(normalized, 48));
+  ZB_LOG_PRINTLN("ZERO request body:");
+  ZB_LOG_PRINTLN(body);
 
   int code = 0;
   String response;
@@ -2471,7 +2485,7 @@ bool postTextToZero(const String& prompt, String* sent_message_id_out, String* e
       break;
     }
     const String normalized = normalizeTlsError(*error_out);
-    Serial.printf("ZERO post attempt %d failed: %s\n", attempt + 1, normalized.c_str());
+    ZB_LOG_PRINTF("ZERO post attempt %d failed: %s\n", attempt + 1, normalized.c_str());
     if (attempt == 0 && isConnResetErrorString(normalized)) {
       delay(150);
       continue;
@@ -2492,20 +2506,20 @@ bool postTextToZero(const String& prompt, String* sent_message_id_out, String* e
 }
 
 void runBootZeroSelfTest() {
-  Serial.println("ZERO self-test: begin");
+  ZB_LOG_PRINTLN("ZERO self-test: begin");
   logHeap("selftest-start");
 
   String poll_error;
   const bool poll_ok = pollZeroAssistantMessages(true, &poll_error);
-  Serial.printf("ZERO self-test poll: %s\n", poll_ok ? "ok" : poll_error.c_str());
+  ZB_LOG_PRINTF("ZERO self-test poll: %s\n", poll_ok ? "ok" : poll_error.c_str());
   logHeap("selftest-after-poll");
 
   String sent_message_id;
   String post_error;
   const bool post_ok = postTextToZero("m5 zero selftest ping", &sent_message_id, &post_error);
-  Serial.printf("ZERO self-test post: %s\n", post_ok ? "ok" : post_error.c_str());
+  ZB_LOG_PRINTF("ZERO self-test post: %s\n", post_ok ? "ok" : post_error.c_str());
   if (post_ok) {
-    Serial.printf("ZERO self-test messageId: %s\n", sent_message_id.c_str());
+    ZB_LOG_PRINTF("ZERO self-test messageId: %s\n", sent_message_id.c_str());
   }
   logHeap("selftest-after-post");
 }
@@ -2550,7 +2564,7 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
       beepAssistantReady();
       String load_error;
       if (!loadCurrentAssistantMessage(&load_error)) {
-        Serial.printf("assistant load failed: %s\n", load_error.c_str());
+        ZB_LOG_PRINTF("assistant load failed: %s\n", load_error.c_str());
       }
       drawUiFrame();
     }
@@ -2575,7 +2589,7 @@ void initMic() {
   mic_cfg.use_adc = false;
   M5.Mic.config(mic_cfg);
   M5.Mic.begin();
-  Serial.println("MIC init: M5.Mic.begin");
+  ZB_LOG_PRINTLN("MIC init: M5.Mic.begin");
 }
 
 void connectWifi() {
@@ -2585,7 +2599,7 @@ void connectWifi() {
   g_wifi_connecting = true;
   g_ip_address = "offline";
   for (const auto& cred : kWifiCreds) {
-    Serial.printf("WiFi try: %s\n", cred.ssid);
+    ZB_LOG_PRINTF("WiFi try: %s\n", cred.ssid);
     WiFi.disconnect(true, true);
     delay(150);
     WiFi.begin(cred.ssid, cred.password);
@@ -2597,7 +2611,7 @@ void connectWifi() {
       g_wifi_connected = true;
       g_wifi_connecting = false;
       g_ip_address = WiFi.localIP().toString();
-      Serial.printf("WiFi connected: %s ip=%s\n", cred.ssid, g_ip_address.c_str());
+      ZB_LOG_PRINTF("WiFi connected: %s ip=%s\n", cred.ssid, g_ip_address.c_str());
       logHeap("wifi connected");
       return;
     }
@@ -2705,7 +2719,7 @@ void closeStreamAsrSession() {
 }
 
 bool startStreamAsrSession(String* error_out) {
-  Serial.println("ASR start: begin");
+  ZB_LOG_PRINTLN("ASR start: begin");
   logHeap("asr start begin");
   if (!g_wifi_connected) {
     *error_out = "wifi offline";
@@ -2727,21 +2741,21 @@ bool startStreamAsrSession(String* error_out) {
   initTlsContext(g_asr_session.proxy_tls.get());
   initTlsContext(g_asr_session.target_tls.get());
   logHeap("asr tls init ok");
-  Serial.println("ASR start: direct socket");
+  ZB_LOG_PRINTLN("ASR start: direct socket");
   if (!connectSocket(kAsrWsHost, kAsrWsPort, &g_asr_session.proxy_fd, error_out)) {
-    Serial.printf("ASR start: direct socket failed: %s\n", error_out->c_str());
+    ZB_LOG_PRINTF("ASR start: direct socket failed: %s\n", error_out->c_str());
     closeStreamAsrSession();
     return false;
   }
-  Serial.println("ASR start: direct tls handshake");
+  ZB_LOG_PRINTLN("ASR start: direct tls handshake");
   if (!handshakeTlsOnSocket(
           g_asr_session.target_tls.get(), g_asr_session.proxy_fd, kAsrWsHost, true, error_out)) {
-    Serial.printf("ASR start: direct tls failed: %s\n", error_out->c_str());
+    ZB_LOG_PRINTF("ASR start: direct tls failed: %s\n", error_out->c_str());
     closeStreamAsrSession();
     return false;
   }
   setSocketTimeoutMs(g_asr_session.proxy_fd, 800, 3000);
-  Serial.println("ASR start: direct tls ok");
+  ZB_LOG_PRINTLN("ASR start: direct tls ok");
   logHeap("asr tls ok");
 
   const String ws_key = "M5StickCPlusWs==";
@@ -2762,21 +2776,21 @@ bool startStreamAsrSession(String* error_out) {
   for (const auto& p : req_parts) {
     req_len += p.length();
   }
-  Serial.printf("ASR start: ws upgrade total len=%u\n", static_cast<unsigned>(req_len));
-  Serial.println("ASR start: write ws upgrade");
+  ZB_LOG_PRINTF("ASR start: ws upgrade total len=%u\n", static_cast<unsigned>(req_len));
+  ZB_LOG_PRINTLN("ASR start: write ws upgrade");
   if (!tlsWriteParts(&g_asr_session.target_tls->ssl, req_parts, error_out)) {
-    Serial.printf("ASR start: ws upgrade write failed: %s\n", error_out->c_str());
+    ZB_LOG_PRINTF("ASR start: ws upgrade write failed: %s\n", error_out->c_str());
     closeStreamAsrSession();
     return false;
   }
-  Serial.println("ASR start: read ws upgrade response");
+  ZB_LOG_PRINTLN("ASR start: read ws upgrade response");
   String ws_error;
   const String ws_resp = tlsReadHeaders(&g_asr_session.target_tls->ssl, &ws_error);
-  Serial.println("ASR WS upgrade response:");
-  Serial.println(ws_resp);
+  ZB_LOG_PRINTLN("ASR WS upgrade response:");
+  ZB_LOG_PRINTLN(ws_resp);
   if (ws_error.length() > 0 || !ws_resp.startsWith("HTTP/1.1 101")) {
     *error_out = ws_error.length() > 0 ? ws_error : trimToWidth(ws_resp, 40);
-    Serial.printf("ASR start: ws upgrade failed: %s\n", error_out->c_str());
+    ZB_LOG_PRINTF("ASR start: ws upgrade failed: %s\n", error_out->c_str());
     closeStreamAsrSession();
     return false;
   }
@@ -2797,15 +2811,15 @@ bool startStreamAsrSession(String* error_out) {
   packet.push_back(0x00);
   appendU32(&packet, full_json.length());
   packet.insert(packet.end(), full_json.begin(), full_json.end());
-  Serial.println("ASR start: send full client request");
+  ZB_LOG_PRINTLN("ASR start: send full client request");
   if (!wsSendBinaryFrame(&g_asr_session.target_tls->ssl, packet.data(), packet.size(), error_out)) {
-    Serial.printf("ASR start: full request send failed: %s\n", error_out->c_str());
+    ZB_LOG_PRINTF("ASR start: full request send failed: %s\n", error_out->c_str());
     closeStreamAsrSession();
     return false;
   }
   logHeap("asr full request sent");
 
-  Serial.println("ASR start: session active");
+  ZB_LOG_PRINTLN("ASR start: session active");
   g_asr_session.active = true;
   logHeap("asr start active");
   return true;
@@ -2823,7 +2837,7 @@ bool sendStreamAudioChunk(const uint8_t* data, size_t data_len, bool is_final, S
   }
   g_last_asr_chunk_sent_ms = millis();
   ++g_asr_chunks_sent;
-  Serial.printf("ASR audio send chunk=%u final=%d bytes=%u recorded=%u sent=%u backlog=%u dropped=%u\n",
+  ZB_LOG_PRINTF("ASR audio send chunk=%u final=%d bytes=%u recorded=%u sent=%u backlog=%u dropped=%u\n",
                 static_cast<unsigned>(g_asr_chunks_sent),
                 is_final ? 1 : 0,
                 static_cast<unsigned>(data_len),
@@ -2944,7 +2958,7 @@ bool ensureAsrSessionStarted(String* error_out) {
       return true;
     }
     const String normalized = normalizeTlsError(*error_out);
-    Serial.printf("ASR session attempt %d failed: %s\n", attempt + 1, normalized.c_str());
+    ZB_LOG_PRINTF("ASR session attempt %d failed: %s\n", attempt + 1, normalized.c_str());
     if (attempt == 0 && isConnResetErrorString(normalized)) {
       closeStreamAsrSession();
       delay(120);
@@ -2972,7 +2986,7 @@ void asrConnectTaskMain(void*) {
   }
   g_asr_async_finished_ms = millis();
   g_asr_connect_state = ok ? AsrConnectState::Ready : AsrConnectState::Failed;
-  Serial.printf("ASR async connect %s ms=%u backlog=%u dropped=%u\n",
+  ZB_LOG_PRINTF("ASR async connect %s ms=%u backlog=%u dropped=%u\n",
                 ok ? "ready" : "failed",
                 static_cast<unsigned>(g_asr_async_finished_ms - g_asr_async_started_ms),
                 static_cast<unsigned>(g_record_backlog.size()),
@@ -3012,7 +3026,7 @@ bool startAsyncAsrConnect(String* error_out) {
     copyAsrConnectError(*error_out);
     return false;
   }
-  Serial.println("ASR async connect started");
+  ZB_LOG_PRINTLN("ASR async connect started");
   return true;
 }
 
@@ -3124,7 +3138,7 @@ void analyzeRecordedAudio() {
   g_record_peak = g_raw_peak;
   g_record_avg_abs = currentRawAvgAbs();
   g_record_clipped_samples = g_raw_clipped_samples;
-  Serial.printf("REC audio bytes=%u backlog=%u dropped=%u peak=%u avg=%u clipped=%u\n",
+  ZB_LOG_PRINTF("REC audio bytes=%u backlog=%u dropped=%u peak=%u avg=%u clipped=%u\n",
                 static_cast<unsigned>(g_recorded_bytes),
                 static_cast<unsigned>(g_record_backlog.size()),
                 static_cast<unsigned>(g_record_backlog.droppedBytes()),
@@ -3169,7 +3183,7 @@ void updateLastAsrCaptureMetrics(unsigned long connect_ms) {
 void logAsrCaptureMetrics(const char* label,
                           unsigned long connect_ms,
                           const zero_buddy::AsrCaptureAssessment& assessment) {
-  Serial.printf("%s metrics recorded=%u flash=%u sent=%u backlog=%u dropped=%u chunks=%u "
+  ZB_LOG_PRINTF("%s metrics recorded=%u flash=%u sent=%u backlog=%u dropped=%u chunks=%u "
                 "connect_ms=%u first_audio_ms=%u last_audio_ms=%u flash_failed=%d "
                 "input_complete=%d upload_complete=%d reason=%s\n",
                 label,
@@ -3327,11 +3341,11 @@ void finishAsrOnlyTest() {
   }
   g_uploading = false;
   if (ok) {
-    Serial.printf("ASR final text: %s\n", text.c_str());
+    ZB_LOG_PRINTF("ASR final text: %s\n", text.c_str());
     g_status = "asr ok";
     g_result = trimToWidth(text, 60);
   } else {
-    Serial.printf("ASR finish failed: %s\n", error.c_str());
+    ZB_LOG_PRINTF("ASR finish failed: %s\n", error.c_str());
     g_status = "failed";
     g_result = trimToWidth(error, 30);
   }
@@ -3350,7 +3364,7 @@ void startAsyncAsrCaptureTest(bool flash_replay) {
   drawUiFrame();
   String error;
   if (!startAsyncAsrConnect(&error)) {
-    Serial.printf("ASR async start failed: %s\n", error.c_str());
+    ZB_LOG_PRINTF("ASR async start failed: %s\n", error.c_str());
     g_recording = false;
     g_status = "failed";
     g_result = trimToWidth(error, 30);
@@ -3428,13 +3442,13 @@ void finishAsyncAsrCaptureTest(bool flash_replay) {
 
   g_uploading = false;
   if (ok) {
-    Serial.printf("%s final text: %s\n", flash_replay ? "ASR FLASH" : "ASR LIVE", text.c_str());
+    ZB_LOG_PRINTF("%s final text: %s\n", flash_replay ? "ASR FLASH" : "ASR LIVE", text.c_str());
     g_status = assessment.ok() ? String(asrCaptureStatusLabel(flash_replay)) + " ok"
                                : String(asrCaptureStatusLabel(flash_replay)) + " lossy";
     g_result = assessment.ok() ? trimToWidth(text, 60)
                                : trimToWidth(String(assessment.reason.c_str()) + " " + text, 60);
   } else {
-    Serial.printf("%s failed: %s\n", flash_replay ? "ASR FLASH" : "ASR LIVE", error.c_str());
+    ZB_LOG_PRINTF("%s failed: %s\n", flash_replay ? "ASR FLASH" : "ASR LIVE", error.c_str());
     g_status = "failed";
     g_result = trimToWidth(error, 36);
   }
@@ -3500,7 +3514,7 @@ void finishNormalConversation() {
   releaseAudioResources();
   g_uploading = false;
   if (!ok) {
-    Serial.printf("ASR finish failed: %s\n", error.c_str());
+    ZB_LOG_PRINTF("ASR finish failed: %s\n", error.c_str());
     stopAssistantPollingWindow();
     g_status = "failed";
     g_result = trimToWidth(error, 36);
@@ -3631,12 +3645,12 @@ void setup() {
   ledcAttachPin(kBuzzerPin, 0);
   ledcWriteTone(0, 0);
 
-  Serial.begin(115200);
+  ZB_SERIAL_BEGIN(115200);
   delay(300);
-  Serial.println();
-  Serial.println("M5StickC Plus Doubao ASR demo booted");
+  ZB_LOG_PRINTLN();
+  ZB_LOG_PRINTLN("M5StickC Plus Doubao ASR demo booted");
   g_flash_store_ready = LittleFS.begin(true);
-  Serial.printf("LittleFS: %s\n", g_flash_store_ready ? "ok" : "failed");
+  ZB_LOG_PRINTF("LittleFS: %s\n", g_flash_store_ready ? "ok" : "failed");
   clearAssistantMessages();
   removeFlashFileIfExists(kZeroResponsePath);
   removeFlashFileIfExists(kAsrRecordPcmPath);
@@ -3664,7 +3678,7 @@ void loop() {
   static unsigned long last_heartbeat = 0;
   if (millis() - last_heartbeat > 5000) {
     last_heartbeat = millis();
-    Serial.printf("alive wifi=%d ip=%s status=%s rec=%u backlog=%u drop=%u "
+    ZB_LOG_PRINTF("alive wifi=%d ip=%s status=%s rec=%u backlog=%u drop=%u "
                   "last_rec=%u last_flash=%u last_sent=%u last_drop=%u last_chunks=%u last_conn=%u "
                   "heap=%u min=%u largest=%u\n",
                   g_wifi_connected ? 1 : 0,
@@ -3710,7 +3724,7 @@ void loop() {
     g_last_zero_poll_ms = millis();
     String poll_error;
     if (!pollZeroAssistantMessages(false, &poll_error)) {
-      Serial.printf("ZERO poll failed: %s\n", poll_error.c_str());
+      ZB_LOG_PRINTF("ZERO poll failed: %s\n", poll_error.c_str());
     }
   }
 
@@ -3792,7 +3806,7 @@ void loop() {
   if (g_recording && bytes_read > 0) {
     if (g_recorded_bytes == 0) {
       g_first_audio_ms = millis();
-      Serial.printf("REC first audio delay=%u ms\n",
+      ZB_LOG_PRINTF("REC first audio delay=%u ms\n",
                     static_cast<unsigned>(g_first_audio_ms - g_record_start_ms));
     }
     g_last_audio_ms = millis();
@@ -3800,13 +3814,13 @@ void loop() {
     g_recorded_bytes += bytes_read;
     g_record_backlog.pushNewest(g_audio_buffer, bytes_read);
     if (g_record_to_flash && !writeRecordFlash(g_audio_buffer, bytes_read)) {
-      Serial.println("record flash write failed");
+      ZB_LOG_PRINTLN("record flash write failed");
     }
     const bool async_asr_mode = usesAsyncAsrCaptureMode();
     const bool async_live_asr_mode = usesAsyncLiveAsrMode();
     const bool sync_asr_mode = g_test_mode == TestMode::Asr;
     if (async_asr_mode && g_asr_connect_state == AsrConnectState::Failed) {
-      Serial.printf("ASR async connect failed while recording: %s\n", g_asr_connect_error);
+      ZB_LOG_PRINTF("ASR async connect failed while recording: %s\n", g_asr_connect_error);
       g_recording = false;
       g_uploading = false;
       g_status = "failed";
@@ -3818,7 +3832,7 @@ void loop() {
         g_asr_session.active) {
       String send_error;
       if (!pumpBufferedAudioToAsr(false, &send_error)) {
-        Serial.printf("ASR live chunk send failed: %s\n", send_error.c_str());
+        ZB_LOG_PRINTF("ASR live chunk send failed: %s\n", send_error.c_str());
         g_recording = false;
         g_uploading = false;
         g_status = "failed";
@@ -3831,7 +3845,7 @@ void loop() {
         millis() - g_record_start_ms >= kAsrConnectDelayMs) {
       String start_error;
       if (!ensureAsrSessionStarted(&start_error)) {
-        Serial.printf("ASR delayed start failed: %s\n", start_error.c_str());
+        ZB_LOG_PRINTF("ASR delayed start failed: %s\n", start_error.c_str());
         g_recording = false;
         g_status = "failed";
         g_result = trimToWidth(start_error, 30);
@@ -3841,7 +3855,7 @@ void loop() {
     if (sync_asr_mode && g_recording && g_asr_session.active) {
       String send_error;
       if (!pumpBufferedAudioToAsr(false, &send_error)) {
-        Serial.printf("ASR chunk send failed: %s\n", send_error.c_str());
+        ZB_LOG_PRINTF("ASR chunk send failed: %s\n", send_error.c_str());
         g_recording = false;
         g_uploading = false;
         g_status = "failed";

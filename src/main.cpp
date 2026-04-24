@@ -30,7 +30,10 @@ constexpr int kLedPin = 10;
 constexpr int kBuzzerPin = 2;
 constexpr int kMicClockPin = 0;
 constexpr int kMicDataPin = 34;
-constexpr int kScreenBrightness = 110;
+constexpr uint8_t kScreenBrightnessLevels[] = {24, 60, 110, 170, 235};
+constexpr uint8_t kScreenBrightnessLevelCount =
+    sizeof(kScreenBrightnessLevels) / sizeof(kScreenBrightnessLevels[0]);
+constexpr uint8_t kDefaultScreenBrightnessLevel = 2;
 constexpr int kScreenWidth = 240;
 constexpr int kScreenHeight = 135;
 constexpr int kAnimFrameMs = 180;
@@ -121,6 +124,8 @@ unsigned long g_last_zero_poll_ms = 0;
 unsigned long g_last_scroll_ms = 0;
 unsigned long g_last_anim_ms = 0;
 size_t g_scroll_line = 0;
+uint8_t g_screen_brightness_level = kDefaultScreenBrightnessLevel;
+bool g_btn_b_hold_seen = false;
 std::vector<String> g_current_message_lines;
 bool g_flash_store_ready = false;
 zero_buddy::NotificationBlinkState g_assistant_led_blink;
@@ -163,6 +168,8 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out);
 void closeStreamAsrSession();
 void clearRecordBacklog();
 void removeFlashFileIfExists(const char* path);
+void applyScreenBrightness();
+void cycleScreenBrightness();
 String currentPendingAssistantMessage();
 void advancePendingAssistantMessage();
 void resetMessageScroll();
@@ -594,6 +601,33 @@ void removeFlashFileIfExists(const char* path) {
   if (LittleFS.exists(path)) {
     LittleFS.remove(path);
   }
+}
+
+uint8_t currentScreenBrightnessValue() {
+  if (g_screen_brightness_level >= kScreenBrightnessLevelCount) {
+    g_screen_brightness_level = kDefaultScreenBrightnessLevel;
+  }
+  return kScreenBrightnessLevels[g_screen_brightness_level];
+}
+
+String screenBrightnessLabel() {
+  return String(static_cast<unsigned>(g_screen_brightness_level) + 1) + "/" +
+         String(static_cast<unsigned>(kScreenBrightnessLevelCount));
+}
+
+void applyScreenBrightness() {
+  M5.Display.setBrightness(currentScreenBrightnessValue());
+}
+
+void cycleScreenBrightness() {
+  g_screen_brightness_level = zero_buddy::nextBrightnessLevel(g_screen_brightness_level,
+                                                              kScreenBrightnessLevelCount);
+  applyScreenBrightness();
+  g_status = "backlight";
+  g_result = "level " + screenBrightnessLabel();
+  Serial.printf("Backlight level %s value=%u\n",
+                screenBrightnessLabel().c_str(),
+                static_cast<unsigned>(currentScreenBrightnessValue()));
 }
 
 String trimToWidth(const String& text, size_t max_len) {
@@ -2415,6 +2449,10 @@ void drawUiFrame() {
   }
   display.setCursor(6, 4);
   display.print(normal_mode ? "M5 Normal" : "M5 Test Bench");
+  display.setFont(&fonts::Font0);
+  display.setTextColor(TFT_LIGHTGREY, normal_mode ? TFT_BLACK : TFT_DARKGREY);
+  display.setCursor(198, 5);
+  display.printf("BL%s", screenBrightnessLabel().c_str());
 
   display.setTextColor(TFT_WHITE, normal_mode ? TFT_BLACK : TFT_NAVY);
   display.setFont(&fonts::Font0);
@@ -2456,7 +2494,7 @@ void drawUiFrame() {
                    static_cast<unsigned>(min(g_scroll_line + 1, g_current_message_lines.size())),
                    static_cast<unsigned>(g_current_message_lines.size()));
   } else {
-    display.printf("%s", normal_mode ? "Hold BtnA to talk" : "BtnB switch, BtnA run");
+    display.printf("%s", normal_mode ? "Hold BtnA, BtnB light" : "BtnA run, hold BtnB mode");
     display.drawRect(kBodyLeft - 2, 78, kBodyWidth + 4, 49, normal_mode ? TFT_WHITE : TFT_DARKGREEN);
     display.setTextColor(TFT_WHITE, TFT_BLACK);
     display.setFont(&fonts::efontCN_14);
@@ -3407,7 +3445,7 @@ void setup() {
   auto cfg = M5.config();
   cfg.clear_display = true;
   M5.begin(cfg);
-  M5.Display.setBrightness(kScreenBrightness);
+  applyScreenBrightness();
   M5.Display.setRotation(3);
   pinMode(kLedPin, OUTPUT);
   digitalWrite(kLedPin, HIGH);
@@ -3513,12 +3551,26 @@ void loop() {
     bytes_read = got ? (kMicRecordSamplesPerRead * sizeof(int16_t)) : 0;
   }
 
-  if (btn_b_pressed && !g_recording && !g_uploading) {
+  if (btn_b_pressed) {
+    g_btn_b_hold_seen = false;
+  }
+
+  if (btn_b_held && !g_btn_b_hold_seen && !g_recording && !g_uploading) {
+    g_btn_b_hold_seen = true;
     nextTestMode();
     g_status = (g_test_mode == TestMode::Normal) ? "ready" : "test bench";
     g_result = (g_test_mode == TestMode::Normal) ? String("hold BtnA to record")
                                                  : String("mode: ") + currentTestModeLabel();
     drawUiFrame();
+  }
+
+  if (btn_b_released && !g_recording && !g_uploading) {
+    if (g_btn_b_hold_seen) {
+      g_btn_b_hold_seen = false;
+    } else {
+      cycleScreenBrightness();
+      drawUiFrame();
+    }
   }
 
   if (btn_a_pressed && !g_recording && !g_uploading) {

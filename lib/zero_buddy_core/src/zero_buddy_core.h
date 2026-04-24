@@ -108,5 +108,6 @@ NotificationBlinkResult updateNotificationBlink(NotificationBlinkState* state,
                                                 uint32_t now_ms,
                                                 uint32_t interval_ms,
                                                 uint32_t pulse_ms);
+uint8_t nextBrightnessLevel(uint8_t current_level, uint8_t level_count);
 
 }  // namespace zero_buddy

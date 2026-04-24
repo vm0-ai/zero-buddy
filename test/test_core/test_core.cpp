@@ -160,6 +160,14 @@ void test_notification_blink_state_machine() {
   TEST_ASSERT_FALSE(result.led_changed);
 }
 
+void test_brightness_level_cycles() {
+  TEST_ASSERT_EQUAL_UINT8(1, zero_buddy::nextBrightnessLevel(0, 5));
+  TEST_ASSERT_EQUAL_UINT8(4, zero_buddy::nextBrightnessLevel(3, 5));
+  TEST_ASSERT_EQUAL_UINT8(0, zero_buddy::nextBrightnessLevel(4, 5));
+  TEST_ASSERT_EQUAL_UINT8(0, zero_buddy::nextBrightnessLevel(5, 5));
+  TEST_ASSERT_EQUAL_UINT8(0, zero_buddy::nextBrightnessLevel(0, 0));
+}
+
 }  // namespace
 
 int main() {
@@ -167,5 +175,6 @@ int main() {
   RUN_TEST(test_memory_safe_conversation_pipeline);
   RUN_TEST(test_asr_capture_strategy_assessment);
   RUN_TEST(test_notification_blink_state_machine);
+  RUN_TEST(test_brightness_level_cycles);
   return UNITY_END();
 }

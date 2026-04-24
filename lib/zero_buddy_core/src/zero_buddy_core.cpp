@@ -289,6 +289,13 @@ NotificationBlinkResult updateNotificationBlink(NotificationBlinkState* state,
   return result;
 }
 
+uint8_t nextBrightnessLevel(uint8_t current_level, uint8_t level_count) {
+  if (level_count == 0 || current_level >= level_count) {
+    return 0;
+  }
+  return static_cast<uint8_t>((current_level + 1) % level_count);
+}
+
 std::string trim(std::string value) {
   const auto begin = std::find_if_not(value.begin(), value.end(), isSpace);
   const auto end = std::find_if_not(value.rbegin(), value.rend(), isSpace).base();

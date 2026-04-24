@@ -3500,17 +3500,19 @@ void loop() {
   }
 
   if (btn_a_pressed && !g_recording && !g_uploading) {
-    if (g_test_mode == TestMode::Normal && !currentPendingAssistantMessage().isEmpty()) {
-      handleAssistantAdvance(false);
-      drawUiFrame();
-    } else {
+    if (!(g_test_mode == TestMode::Normal && !currentPendingAssistantMessage().isEmpty())) {
       startCurrentTest();
     }
   }
 
   if (g_test_mode == TestMode::Normal && btn_a_held && !g_recording && !g_uploading &&
       !currentPendingAssistantMessage().isEmpty()) {
-    handleAssistantAdvance(true);
+    startCurrentTest();
+  }
+
+  if (g_test_mode == TestMode::Normal && btn_a_released && !g_recording && !g_uploading &&
+      !currentPendingAssistantMessage().isEmpty()) {
+    handleAssistantAdvance(false);
     drawUiFrame();
   }
 

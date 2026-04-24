@@ -162,6 +162,7 @@ void drawUiFrame();
 bool pollZeroAssistantMessages(bool baseline_only, String* error_out);
 void closeStreamAsrSession();
 void clearRecordBacklog();
+void removeFlashFileIfExists(const char* path);
 String currentPendingAssistantMessage();
 void advancePendingAssistantMessage();
 void resetMessageScroll();
@@ -530,6 +531,7 @@ uint32_t currentRawAvgAbs() {
 void releaseAudioResources() {
   waitForAsrConnectTask(kAsrRecordConnectWaitMs);
   closeRecordFlash();
+  removeFlashFileIfExists(kAsrRecordPcmPath);
   g_record_to_flash = false;
   closeStreamAsrSession();
   resetAsrConnectStateIfDone();
@@ -583,6 +585,15 @@ void closeRecordFlash() {
 
 void clearRecordBacklog() {
   g_record_backlog.clear();
+}
+
+void removeFlashFileIfExists(const char* path) {
+  if (!g_flash_store_ready || path == nullptr || path[0] == '\0') {
+    return;
+  }
+  if (LittleFS.exists(path)) {
+    LittleFS.remove(path);
+  }
 }
 
 String trimToWidth(const String& text, size_t max_len) {
@@ -905,6 +916,12 @@ String assistantMessagePath(size_t index) {
 }
 
 void clearAssistantMessages() {
+  if (g_flash_store_ready) {
+    for (size_t i = 0; i < kMaxPendingAssistantMessages; ++i) {
+      const String path = assistantMessagePath(i);
+      removeFlashFileIfExists(path.c_str());
+    }
+  }
   g_pending_assistant_count = 0;
   g_pending_message_index = 0;
   g_current_assistant_message = "";
@@ -2294,10 +2311,12 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
   int code = 0;
   String response;
   if (!zeroProxyRequest("GET", path, "", &code, &response, error_out, kZeroResponsePath)) {
+    removeFlashFileIfExists(kZeroResponsePath);
     return false;
   }
   if (code != 200) {
     *error_out = "poll " + String(code);
+    removeFlashFileIfExists(kZeroResponsePath);
     return false;
   }
 
@@ -2305,6 +2324,7 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
   const size_t before_count = g_pending_assistant_count;
   size_t added_count = 0;
   parseZeroMessagesFileToFlash(baseline_only, &newest_message_id, &added_count, error_out);
+  removeFlashFileIfExists(kZeroResponsePath);
   if (!newest_message_id.isEmpty()) {
     g_zero_last_seen_message_id = newest_message_id;
   }
@@ -3402,6 +3422,8 @@ void setup() {
   g_flash_store_ready = LittleFS.begin(true);
   Serial.printf("LittleFS: %s\n", g_flash_store_ready ? "ok" : "failed");
   clearAssistantMessages();
+  removeFlashFileIfExists(kZeroResponsePath);
+  removeFlashFileIfExists(kAsrRecordPcmPath);
 
   randomSeed(esp_random());
   connectWifi();

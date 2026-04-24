@@ -5,7 +5,9 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <driver/i2s.h>
+#include <driver/gpio.h>
 #include <esp_heap_caps.h>
+#include <esp_sleep.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <lwip/sockets.h>
@@ -30,6 +32,8 @@ constexpr int kLedPin = 10;
 constexpr int kBuzzerPin = 2;
 constexpr int kMicClockPin = 0;
 constexpr int kMicDataPin = 34;
+constexpr gpio_num_t kBtnAWakePin = GPIO_NUM_37;
+constexpr gpio_num_t kBtnBWakePin = GPIO_NUM_39;
 constexpr uint8_t kScreenBrightnessLevels[] = {24, 60, 110, 170, 235};
 constexpr uint8_t kScreenBrightnessLevelCount =
     sizeof(kScreenBrightnessLevels) / sizeof(kScreenBrightnessLevels[0]);
@@ -63,6 +67,8 @@ constexpr unsigned long kMicTestDurationMs = 1500;
 constexpr unsigned long kAsrTestDurationMs = 2000;
 constexpr uint32_t kAssistantLedBlinkIntervalMs = 3000;
 constexpr uint32_t kAssistantLedBlinkPulseMs = 120;
+constexpr uint32_t kAwakeWindowMs = 10UL * 60UL * 1000UL;
+constexpr uint32_t kAssistantPollWindowMs = 10UL * 60UL * 1000UL;
 
 constexpr char kAsrWsHost[] = "openspeech.bytedance.com";
 constexpr uint16_t kAsrWsPort = 443;
@@ -126,9 +132,11 @@ unsigned long g_last_anim_ms = 0;
 size_t g_scroll_line = 0;
 uint8_t g_screen_brightness_level = kDefaultScreenBrightnessLevel;
 bool g_btn_b_hold_seen = false;
+bool g_suppress_wake_short_action = false;
 std::vector<String> g_current_message_lines;
 bool g_flash_store_ready = false;
 zero_buddy::NotificationBlinkState g_assistant_led_blink;
+zero_buddy::PowerWindowState g_power;
 
 enum class TestMode : uint8_t {
   Normal = 0,
@@ -170,6 +178,13 @@ void clearRecordBacklog();
 void removeFlashFileIfExists(const char* path);
 void applyScreenBrightness();
 void cycleScreenBrightness();
+void wakeScreen(bool user_action, const char* reason);
+void enterScreenSleep(const char* reason);
+void runLightSleepIfIdle();
+void beginAssistantPollingWindow();
+void stopAssistantPollingWindow();
+bool assistantPollingWindowActive();
+void clearAssistantLedBlinkForUserAction();
 String currentPendingAssistantMessage();
 void advancePendingAssistantMessage();
 void resetMessageScroll();
@@ -628,6 +643,93 @@ void cycleScreenBrightness() {
   Serial.printf("Backlight level %s value=%u\n",
                 screenBrightnessLabel().c_str(),
                 static_cast<unsigned>(currentScreenBrightnessValue()));
+}
+
+void wakeScreen(bool user_action, const char* reason) {
+  const uint32_t now = millis();
+  const bool was_awake = g_power.screen_awake;
+  zero_buddy::wakePowerWindow(&g_power, now, kAwakeWindowMs);
+  if (g_waiting_for_assistant) {
+    zero_buddy::startAssistantPollWindow(&g_power, now, kAssistantPollWindowMs);
+  }
+  applyScreenBrightness();
+  if (!was_awake) {
+    Serial.printf("Power wake: %s\n", reason != nullptr ? reason : "unknown");
+  }
+  if (user_action) {
+    clearAssistantLedBlinkForUserAction();
+  }
+  drawUiFrame();
+}
+
+void enterScreenSleep(const char* reason) {
+  if (!g_power.screen_awake || g_recording || g_uploading) {
+    return;
+  }
+  Serial.printf("Power sleep: %s\n", reason != nullptr ? reason : "idle");
+  zero_buddy::sleepPowerWindow(&g_power);
+  ledcWriteTone(0, 0);
+  g_buzzer_stop_ms = 0;
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setBrightness(0);
+}
+
+void beginAssistantPollingWindow() {
+  const uint32_t now = millis();
+  g_waiting_for_assistant = true;
+  g_last_zero_poll_ms = now;
+  zero_buddy::startAssistantPollWindow(&g_power, now, kAssistantPollWindowMs);
+}
+
+void stopAssistantPollingWindow() {
+  g_waiting_for_assistant = false;
+  zero_buddy::stopAssistantPollWindow(&g_power);
+}
+
+bool assistantPollingWindowActive() {
+  return zero_buddy::assistantPollWindowActive(g_power, millis());
+}
+
+void runLightSleepIfIdle() {
+  if (g_power.screen_awake || g_recording || g_uploading) {
+    return;
+  }
+
+  uint64_t sleep_us = 0;
+  if (g_waiting_for_assistant && assistantPollingWindowActive() &&
+      currentPendingAssistantMessage().isEmpty()) {
+    const uint32_t now = millis();
+    const uint32_t next_poll_ms = g_last_zero_poll_ms + kZeroPollIntervalMs;
+    uint32_t wake_at_ms = next_poll_ms;
+    if (static_cast<int32_t>(g_power.assistant_poll_until_ms - wake_at_ms) < 0) {
+      wake_at_ms = g_power.assistant_poll_until_ms;
+    }
+    if (static_cast<int32_t>(wake_at_ms - now) <= 0) {
+      return;
+    }
+    sleep_us = static_cast<uint64_t>(wake_at_ms - now) * 1000ULL;
+  }
+
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  gpio_wakeup_enable(kBtnAWakePin, GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable(kBtnBWakePin, GPIO_INTR_LOW_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  if (sleep_us > 0) {
+    esp_sleep_enable_timer_wakeup(sleep_us);
+  }
+  const esp_err_t sleep_err = esp_light_sleep_start();
+  gpio_wakeup_disable(kBtnAWakePin);
+  gpio_wakeup_disable(kBtnBWakePin);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+
+  if (sleep_err != ESP_OK) {
+    Serial.printf("Power light sleep failed: %d\n", static_cast<int>(sleep_err));
+    return;
+  }
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) {
+    g_suppress_wake_short_action = true;
+    wakeScreen(true, "button");
+  }
 }
 
 String trimToWidth(const String& text, size_t max_len) {
@@ -1176,7 +1278,7 @@ void advancePendingAssistantMessage() {
   }
   if (g_pending_message_index >= g_pending_assistant_count) {
     clearAssistantMessages();
-    g_waiting_for_assistant = false;
+    stopAssistantPollingWindow();
     g_status = "ready";
     g_result = "hold BtnA to record";
   } else {
@@ -2365,6 +2467,7 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
   if (!baseline_only) {
     if (added_count > 0) {
       notifyAssistantMessageArrived();
+      wakeScreen(false, "assistant");
     }
     if (added_count > 0 && before_count == 0) {
       g_pending_message_index = 0;
@@ -2432,6 +2535,9 @@ void connectWifi() {
 }
 
 void drawUiFrame() {
+  if (!g_power.screen_awake) {
+    return;
+  }
   auto& display = M5.Display;
   display.setRotation(3);
   display.fillScreen(TFT_BLACK);
@@ -3084,7 +3190,7 @@ bool transcribeFlashRecording(String* text_out, String* error_out) {
 
 void startRecording() {
   closeStreamAsrSession();
-  g_waiting_for_assistant = false;
+  stopAssistantPollingWindow();
   beepListenStart();
   clearRecordBacklog();
   g_recorded_bytes = 0;
@@ -3326,7 +3432,7 @@ void finishNormalConversation() {
   g_uploading = false;
   if (!ok) {
     Serial.printf("ASR finish failed: %s\n", error.c_str());
-    g_waiting_for_assistant = false;
+    stopAssistantPollingWindow();
     g_status = "failed";
     g_result = trimToWidth(error, 36);
     drawUiFrame();
@@ -3343,12 +3449,11 @@ void finishNormalConversation() {
     if (!sent_message_id.isEmpty()) {
       g_zero_last_seen_message_id = sent_message_id;
     }
-    g_waiting_for_assistant = true;
-    g_last_zero_poll_ms = millis();
+    beginAssistantPollingWindow();
     g_status = "sent to zero";
     g_result = "waiting assistant";
   } else {
-    g_waiting_for_assistant = false;
+    stopAssistantPollingWindow();
     g_status = "zero failed";
     g_result = trimToWidth(zero_error, 36);
   }
@@ -3403,7 +3508,7 @@ void runZeroPollTest() {
 }
 
 void startCurrentTest() {
-  g_waiting_for_assistant = false;
+  stopAssistantPollingWindow();
   clearAssistantMessages();
   switch (g_test_mode) {
     case TestMode::Normal:
@@ -3445,8 +3550,12 @@ void setup() {
   auto cfg = M5.config();
   cfg.clear_display = true;
   M5.begin(cfg);
+  g_power.screen_awake = true;
+  zero_buddy::wakePowerWindow(&g_power, millis(), kAwakeWindowMs);
   applyScreenBrightness();
   M5.Display.setRotation(3);
+  pinMode(static_cast<int>(kBtnAWakePin), INPUT);
+  pinMode(static_cast<int>(kBtnBWakePin), INPUT);
   pinMode(kLedPin, OUTPUT);
   digitalWrite(kLedPin, HIGH);
   ledcSetup(0, 2000, 8);
@@ -3473,6 +3582,7 @@ void setup() {
     pollZeroAssistantMessages(true, &poll_error);
   }
   drawUiFrame();
+  enterScreenSleep("boot");
 }
 
 void loop() {
@@ -3515,8 +3625,18 @@ void loop() {
     drawUiFrame();
   }
 
+  if (g_test_mode == TestMode::Normal && g_waiting_for_assistant &&
+      !assistantPollingWindowActive() && currentPendingAssistantMessage().isEmpty() &&
+      !g_recording && !g_uploading) {
+    stopAssistantPollingWindow();
+    g_status = "ready";
+    g_result = "hold BtnA to record";
+    drawUiFrame();
+  }
+
   if (g_test_mode == TestMode::Normal && g_wifi_connected && g_waiting_for_assistant && !g_recording &&
       !g_uploading && currentPendingAssistantMessage().isEmpty() &&
+      assistantPollingWindowActive() &&
       millis() - g_last_zero_poll_ms >= kZeroPollIntervalMs) {
     g_last_zero_poll_ms = millis();
     String poll_error;
@@ -3539,9 +3659,11 @@ void loop() {
   const bool btn_b_pressed = M5.BtnB.wasPressed();
   const bool btn_b_released = M5.BtnB.wasReleased();
   const bool btn_b_held = M5.BtnB.wasHold();
+  const bool btn_a_down = M5.BtnA.isPressed();
+  const bool btn_b_down = M5.BtnB.isPressed();
   if (btn_a_pressed || btn_a_released || btn_a_held ||
       btn_b_pressed || btn_b_released || btn_b_held) {
-    clearAssistantLedBlinkForUserAction();
+    wakeScreen(true, "button");
   }
 
   size_t bytes_read = 0;
@@ -3555,7 +3677,7 @@ void loop() {
     g_btn_b_hold_seen = false;
   }
 
-  if (btn_b_held && !g_btn_b_hold_seen && !g_recording && !g_uploading) {
+  if (btn_b_held && !g_suppress_wake_short_action && !g_btn_b_hold_seen && !g_recording && !g_uploading) {
     g_btn_b_hold_seen = true;
     nextTestMode();
     g_status = (g_test_mode == TestMode::Normal) ? "ready" : "test bench";
@@ -3565,7 +3687,9 @@ void loop() {
   }
 
   if (btn_b_released && !g_recording && !g_uploading) {
-    if (g_btn_b_hold_seen) {
+    if (g_suppress_wake_short_action) {
+      g_btn_b_hold_seen = false;
+    } else if (g_btn_b_hold_seen) {
       g_btn_b_hold_seen = false;
     } else {
       cycleScreenBrightness();
@@ -3574,20 +3698,26 @@ void loop() {
   }
 
   if (btn_a_pressed && !g_recording && !g_uploading) {
-    if (!(g_test_mode == TestMode::Normal && !currentPendingAssistantMessage().isEmpty())) {
+    if (g_test_mode != TestMode::Normal) {
       startCurrentTest();
     }
   }
 
-  if (g_test_mode == TestMode::Normal && btn_a_held && !g_recording && !g_uploading &&
-      !currentPendingAssistantMessage().isEmpty()) {
+  if (g_test_mode == TestMode::Normal && btn_a_held && !g_recording && !g_uploading) {
+    g_suppress_wake_short_action = false;
     startCurrentTest();
   }
 
   if (g_test_mode == TestMode::Normal && btn_a_released && !g_recording && !g_uploading &&
       !currentPendingAssistantMessage().isEmpty()) {
-    handleAssistantAdvance(false);
-    drawUiFrame();
+    if (!g_suppress_wake_short_action) {
+      handleAssistantAdvance(false);
+      drawUiFrame();
+    }
+  }
+
+  if (!btn_a_down && !btn_b_down) {
+    g_suppress_wake_short_action = false;
   }
 
   if (g_recording && bytes_read > 0) {
@@ -3675,4 +3805,8 @@ void loop() {
   }
 
   serviceAssistantLedBlink();
+  if (zero_buddy::shouldAutoSleepScreen(g_power, g_recording || g_uploading, millis())) {
+    enterScreenSleep("idle timeout");
+  }
+  runLightSleepIfIdle();
 }

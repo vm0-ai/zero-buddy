@@ -296,6 +296,47 @@ uint8_t nextBrightnessLevel(uint8_t current_level, uint8_t level_count) {
   return static_cast<uint8_t>((current_level + 1) % level_count);
 }
 
+void wakePowerWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms) {
+  if (state == nullptr) {
+    return;
+  }
+  state->screen_awake = true;
+  state->awake_until_ms = now_ms + duration_ms;
+}
+
+void sleepPowerWindow(PowerWindowState* state) {
+  if (state == nullptr) {
+    return;
+  }
+  state->screen_awake = false;
+}
+
+void startAssistantPollWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms) {
+  if (state == nullptr) {
+    return;
+  }
+  state->assistant_poll_until_ms = now_ms + duration_ms;
+}
+
+void stopAssistantPollWindow(PowerWindowState* state) {
+  if (state == nullptr) {
+    return;
+  }
+  state->assistant_poll_until_ms = 0;
+}
+
+bool assistantPollWindowActive(const PowerWindowState& state, uint32_t now_ms) {
+  return state.assistant_poll_until_ms != 0 &&
+         !timeReached(now_ms, state.assistant_poll_until_ms);
+}
+
+bool shouldAutoSleepScreen(const PowerWindowState& state, bool busy, uint32_t now_ms) {
+  if (!state.screen_awake || busy || state.awake_until_ms == 0) {
+    return false;
+  }
+  return timeReached(now_ms, state.awake_until_ms);
+}
+
 std::string trim(std::string value) {
   const auto begin = std::find_if_not(value.begin(), value.end(), isSpace);
   const auto end = std::find_if_not(value.rbegin(), value.rend(), isSpace).base();

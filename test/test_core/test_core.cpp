@@ -168,6 +168,28 @@ void test_brightness_level_cycles() {
   TEST_ASSERT_EQUAL_UINT8(0, zero_buddy::nextBrightnessLevel(0, 0));
 }
 
+void test_power_window_state_machine() {
+  zero_buddy::PowerWindowState state;
+  TEST_ASSERT_FALSE(state.screen_awake);
+
+  zero_buddy::wakePowerWindow(&state, 1000, 600000);
+  TEST_ASSERT_TRUE(state.screen_awake);
+  TEST_ASSERT_EQUAL_UINT32(601000, state.awake_until_ms);
+  TEST_ASSERT_FALSE(zero_buddy::shouldAutoSleepScreen(state, false, 600999));
+  TEST_ASSERT_TRUE(zero_buddy::shouldAutoSleepScreen(state, false, 601000));
+  TEST_ASSERT_FALSE(zero_buddy::shouldAutoSleepScreen(state, true, 601000));
+
+  zero_buddy::startAssistantPollWindow(&state, 2000, 600000);
+  TEST_ASSERT_TRUE(zero_buddy::assistantPollWindowActive(state, 601999));
+  TEST_ASSERT_FALSE(zero_buddy::assistantPollWindowActive(state, 602000));
+
+  zero_buddy::stopAssistantPollWindow(&state);
+  TEST_ASSERT_FALSE(zero_buddy::assistantPollWindowActive(state, 3000));
+
+  zero_buddy::sleepPowerWindow(&state);
+  TEST_ASSERT_FALSE(state.screen_awake);
+}
+
 }  // namespace
 
 int main() {
@@ -176,5 +198,6 @@ int main() {
   RUN_TEST(test_asr_capture_strategy_assessment);
   RUN_TEST(test_notification_blink_state_machine);
   RUN_TEST(test_brightness_level_cycles);
+  RUN_TEST(test_power_window_state_machine);
   return UNITY_END();
 }

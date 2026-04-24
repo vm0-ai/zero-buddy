@@ -68,6 +68,12 @@ struct NotificationBlinkResult {
   bool led_changed = false;
 };
 
+struct PowerWindowState {
+  bool screen_awake = false;
+  uint32_t awake_until_ms = 0;
+  uint32_t assistant_poll_until_ms = 0;
+};
+
 class FixedByteQueue {
  public:
   FixedByteQueue(uint8_t* storage, size_t capacity);
@@ -109,5 +115,11 @@ NotificationBlinkResult updateNotificationBlink(NotificationBlinkState* state,
                                                 uint32_t interval_ms,
                                                 uint32_t pulse_ms);
 uint8_t nextBrightnessLevel(uint8_t current_level, uint8_t level_count);
+void wakePowerWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms);
+void sleepPowerWindow(PowerWindowState* state);
+void startAssistantPollWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms);
+void stopAssistantPollWindow(PowerWindowState* state);
+bool assistantPollWindowActive(const PowerWindowState& state, uint32_t now_ms);
+bool shouldAutoSleepScreen(const PowerWindowState& state, bool busy, uint32_t now_ms);
 
 }  // namespace zero_buddy

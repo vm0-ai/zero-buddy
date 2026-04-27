@@ -168,6 +168,16 @@ void test_brightness_level_cycles() {
   TEST_ASSERT_EQUAL_UINT8(0, zero_buddy::nextBrightnessLevel(0, 0));
 }
 
+void test_battery_fill_pixels() {
+  TEST_ASSERT_EQUAL_UINT8(0, zero_buddy::batteryFillPixels(-1, 18));
+  TEST_ASSERT_EQUAL_UINT8(0, zero_buddy::batteryFillPixels(0, 18));
+  TEST_ASSERT_EQUAL_UINT8(1, zero_buddy::batteryFillPixels(1, 18));
+  TEST_ASSERT_EQUAL_UINT8(9, zero_buddy::batteryFillPixels(50, 18));
+  TEST_ASSERT_EQUAL_UINT8(18, zero_buddy::batteryFillPixels(100, 18));
+  TEST_ASSERT_EQUAL_UINT8(18, zero_buddy::batteryFillPixels(120, 18));
+  TEST_ASSERT_EQUAL_UINT8(0, zero_buddy::batteryFillPixels(80, 0));
+}
+
 void test_power_window_state_machine() {
   zero_buddy::PowerWindowState state;
   TEST_ASSERT_FALSE(state.screen_awake);
@@ -198,6 +208,7 @@ int main() {
   RUN_TEST(test_asr_capture_strategy_assessment);
   RUN_TEST(test_notification_blink_state_machine);
   RUN_TEST(test_brightness_level_cycles);
+  RUN_TEST(test_battery_fill_pixels);
   RUN_TEST(test_power_window_state_machine);
   return UNITY_END();
 }

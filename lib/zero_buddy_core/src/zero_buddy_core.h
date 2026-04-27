@@ -115,6 +115,7 @@ NotificationBlinkResult updateNotificationBlink(NotificationBlinkState* state,
                                                 uint32_t interval_ms,
                                                 uint32_t pulse_ms);
 uint8_t nextBrightnessLevel(uint8_t current_level, uint8_t level_count);
+uint8_t batteryFillPixels(int32_t level_percent, uint8_t max_pixels);
 void wakePowerWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms);
 void sleepPowerWindow(PowerWindowState* state);
 void startAssistantPollWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms);

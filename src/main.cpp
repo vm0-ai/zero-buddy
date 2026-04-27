@@ -68,6 +68,10 @@ constexpr int kBodyWidth = 229;
 constexpr int kBodyHeight = 108;
 constexpr int kBodyLineHeight = 16;
 constexpr int kBodyVisibleLines = 6;
+constexpr int kBatteryIconW = 24;
+constexpr int kBatteryIconH = 9;
+constexpr int kBatteryIconTipW = 2;
+constexpr uint32_t kBatteryReadIntervalMs = 30000;
 constexpr int kSampleRate = 16000;
 constexpr size_t kReadLen = 512;
 constexpr size_t kStreamChunkBytes = kSampleRate * 2 / 5;  // 200ms PCM16 mono
@@ -153,6 +157,15 @@ bool g_flash_store_ready = false;
 zero_buddy::NotificationBlinkState g_assistant_led_blink;
 zero_buddy::PowerWindowState g_power;
 
+struct BatteryUiState {
+  int32_t level_percent = -1;
+  bool charging = false;
+  bool known = false;
+  uint32_t last_read_ms = 0;
+};
+
+BatteryUiState g_battery_ui;
+
 enum class TestMode : uint8_t {
   Normal = 0,
   Mic = 1,
@@ -187,6 +200,8 @@ unsigned long g_asr_async_finished_ms = 0;
 unsigned long g_test_capture_deadline_ms = 0;
 
 void drawUiFrame();
+void drawBatteryStatus();
+void refreshBatteryStatus(bool force);
 bool pollZeroAssistantMessages(bool baseline_only, String* error_out);
 void closeStreamAsrSession();
 void clearRecordBacklog();
@@ -2621,6 +2636,79 @@ void connectWifi() {
   logHeap("wifi failed");
 }
 
+void refreshBatteryStatus(bool force) {
+  const uint32_t now = millis();
+  if (!force && g_battery_ui.last_read_ms != 0 &&
+      static_cast<uint32_t>(now - g_battery_ui.last_read_ms) < kBatteryReadIntervalMs) {
+    return;
+  }
+
+  int32_t level = M5.Power.getBatteryLevel();
+  const auto charging_state = M5.Power.isCharging();
+  g_battery_ui.charging = charging_state == m5::Power_Class::is_charging;
+  g_battery_ui.known = level >= 0;
+  if (g_battery_ui.known) {
+    if (level > 100) {
+      level = 100;
+    }
+    g_battery_ui.level_percent = level;
+  } else {
+    g_battery_ui.level_percent = -1;
+  }
+  g_battery_ui.last_read_ms = now == 0 ? 1 : now;
+}
+
+uint16_t batteryFillColor() {
+  if (g_battery_ui.charging) {
+    return TFT_CYAN;
+  }
+  if (!g_battery_ui.known) {
+    return TFT_DARKGREY;
+  }
+  if (g_battery_ui.level_percent <= 15) {
+    return TFT_RED;
+  }
+  if (g_battery_ui.level_percent <= 35) {
+    return TFT_ORANGE;
+  }
+  return TFT_GREEN;
+}
+
+void drawBatteryStatus() {
+  refreshBatteryStatus(false);
+
+  auto& display = M5.Display;
+  const int icon_x = kUiOffsetX + kScreenWidth - kBatteryIconW - kBatteryIconTipW - 5;
+  const int icon_y = 2;
+  const uint16_t outline = g_battery_ui.known ? TFT_LIGHTGREY : TFT_DARKGREY;
+
+  display.setFont(&fonts::Font0);
+  display.setTextColor(outline, TFT_BLACK);
+  display.setCursor(icon_x - 20, icon_y + 1);
+  if (g_battery_ui.known) {
+    display.printf("%3d", static_cast<int>(g_battery_ui.level_percent));
+  } else {
+    display.print("  ?");
+  }
+
+  display.drawRect(icon_x, icon_y, kBatteryIconW, kBatteryIconH, outline);
+  display.fillRect(icon_x + kBatteryIconW, icon_y + 3, kBatteryIconTipW, kBatteryIconH - 6, outline);
+  const uint8_t fill_w =
+      g_battery_ui.known
+          ? zero_buddy::batteryFillPixels(g_battery_ui.level_percent,
+                                          static_cast<uint8_t>(kBatteryIconW - 4))
+          : 0;
+  if (fill_w > 0) {
+    display.fillRect(icon_x + 2, icon_y + 2, fill_w, kBatteryIconH - 4, batteryFillColor());
+  }
+  if (g_battery_ui.charging) {
+    const int lx = icon_x + 12;
+    display.drawLine(lx + 1, icon_y + 1, lx - 2, icon_y + 5, TFT_YELLOW);
+    display.drawLine(lx - 2, icon_y + 5, lx + 2, icon_y + 5, TFT_YELLOW);
+    display.drawLine(lx + 2, icon_y + 5, lx - 1, icon_y + 8, TFT_YELLOW);
+  }
+}
+
 void drawUiFrame() {
   if (!g_power.screen_awake) {
     return;
@@ -2630,6 +2718,7 @@ void drawUiFrame() {
   display.fillScreen(TFT_BLACK);
   const bool normal_mode = g_test_mode == TestMode::Normal;
   display.setTextWrap(false);
+  drawBatteryStatus();
 
   if (normal_mode && g_wifi_connecting) {
     display.setTextColor(TFT_CYAN, TFT_BLACK);

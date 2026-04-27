@@ -296,6 +296,17 @@ uint8_t nextBrightnessLevel(uint8_t current_level, uint8_t level_count) {
   return static_cast<uint8_t>((current_level + 1) % level_count);
 }
 
+uint8_t batteryFillPixels(int32_t level_percent, uint8_t max_pixels) {
+  if (max_pixels == 0 || level_percent <= 0) {
+    return 0;
+  }
+  if (level_percent >= 100) {
+    return max_pixels;
+  }
+  const uint32_t fill = (static_cast<uint32_t>(level_percent) * max_pixels + 50) / 100;
+  return static_cast<uint8_t>(std::max<uint32_t>(1, fill));
+}
+
 void wakePowerWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms) {
   if (state == nullptr) {
     return;

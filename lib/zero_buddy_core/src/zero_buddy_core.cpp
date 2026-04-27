@@ -140,6 +140,90 @@ bool timeReached(uint32_t now_ms, uint32_t deadline_ms) {
   return static_cast<int32_t>(now_ms - deadline_ms) >= 0;
 }
 
+std::string escapeJsonString(std::string value) {
+  std::string out;
+  out.reserve(value.size() + 8);
+  for (char ch : value) {
+    switch (ch) {
+      case '"':
+      case '\\':
+        out += '\\';
+        out += ch;
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out += ch;
+        break;
+    }
+  }
+  return out;
+}
+
+bool extractJsonUnsigned(std::string body, std::string key, size_t* value_out) {
+  const std::string key_needle = "\"" + key + "\"";
+  const size_t key_pos = body.find(key_needle);
+  if (key_pos == std::string::npos) {
+    return false;
+  }
+  size_t cursor = key_pos + key_needle.size();
+  while (cursor < body.size() && isSpace(body[cursor])) {
+    ++cursor;
+  }
+  if (cursor >= body.size() || body[cursor] != ':') {
+    return false;
+  }
+  ++cursor;
+  while (cursor < body.size() && isSpace(body[cursor])) {
+    ++cursor;
+  }
+  if (cursor >= body.size() || body[cursor] < '0' || body[cursor] > '9') {
+    return false;
+  }
+  size_t value = 0;
+  while (cursor < body.size() && body[cursor] >= '0' && body[cursor] <= '9') {
+    value = value * 10 + static_cast<size_t>(body[cursor] - '0');
+    ++cursor;
+  }
+  *value_out = value;
+  return true;
+}
+
+bool extractJsonBool(std::string body, std::string key, bool* value_out) {
+  const std::string key_needle = "\"" + key + "\"";
+  const size_t key_pos = body.find(key_needle);
+  if (key_pos == std::string::npos) {
+    return false;
+  }
+  size_t cursor = key_pos + key_needle.size();
+  while (cursor < body.size() && isSpace(body[cursor])) {
+    ++cursor;
+  }
+  if (cursor >= body.size() || body[cursor] != ':') {
+    return false;
+  }
+  ++cursor;
+  while (cursor < body.size() && isSpace(body[cursor])) {
+    ++cursor;
+  }
+  if (body.compare(cursor, 4, "true") == 0) {
+    *value_out = true;
+    return true;
+  }
+  if (body.compare(cursor, 5, "false") == 0) {
+    *value_out = false;
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 FixedByteQueue::FixedByteQueue(uint8_t* storage, size_t capacity)
@@ -322,30 +406,143 @@ void sleepPowerWindow(PowerWindowState* state) {
   state->screen_awake = false;
 }
 
-void startAssistantPollWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms) {
-  if (state == nullptr) {
-    return;
-  }
-  state->assistant_poll_until_ms = now_ms + duration_ms;
-}
-
-void stopAssistantPollWindow(PowerWindowState* state) {
-  if (state == nullptr) {
-    return;
-  }
-  state->assistant_poll_until_ms = 0;
-}
-
-bool assistantPollWindowActive(const PowerWindowState& state, uint32_t now_ms) {
-  return state.assistant_poll_until_ms != 0 &&
-         !timeReached(now_ms, state.assistant_poll_until_ms);
-}
-
 bool shouldAutoSleepScreen(const PowerWindowState& state, bool busy, uint32_t now_ms) {
   if (!state.screen_awake || busy || state.awake_until_ms == 0) {
     return false;
   }
   return timeReached(now_ms, state.awake_until_ms);
+}
+
+BuddyTransition applyBuddyEvent(BuddyState state,
+                                BuddyEvent event,
+                                const uint32_t* poll_backoff_ms,
+                                size_t poll_backoff_count) {
+  BuddyTransition transition;
+  transition.state = state;
+
+  auto pollDelay = [&](uint8_t index) -> uint32_t {
+    if (poll_backoff_ms == nullptr || poll_backoff_count == 0) {
+      return 0;
+    }
+    if (index >= poll_backoff_count) {
+      index = static_cast<uint8_t>(poll_backoff_count - 1);
+    }
+    return poll_backoff_ms[index];
+  };
+
+  auto enterRecording = [&]() {
+    transition.state.mode = BuddyMode::Recording;
+    transition.state.has_unread_assistant = false;
+    transition.state.poll_backoff_index = 0;
+    transition.actions.wake_screen = true;
+    transition.actions.start_recording = true;
+    transition.actions.stop_polling =
+        state.mode == BuddyMode::Polling || state.mode == BuddyMode::MessageSent;
+  };
+
+  switch (state.mode) {
+    case BuddyMode::DeepSleep:
+      if (event == BuddyEvent::ShortPress) {
+        transition.state.mode = BuddyMode::Home;
+        transition.actions.wake_screen = true;
+      } else if (event == BuddyEvent::LongPress) {
+        enterRecording();
+      } else if (event == BuddyEvent::PollTimerWake) {
+        transition.state.mode = BuddyMode::Polling;
+        transition.actions.poll_now = true;
+      }
+      break;
+
+    case BuddyMode::Home:
+      if (event == BuddyEvent::ShortPress) {
+        transition.actions.wake_screen = true;
+      } else if (event == BuddyEvent::LongPress) {
+        enterRecording();
+      } else if (event == BuddyEvent::UnreadConsumed) {
+        transition.state.has_unread_assistant = false;
+      } else if (event == BuddyEvent::IdleTimeout) {
+        transition.state.mode = BuddyMode::DeepSleep;
+        transition.actions.deep_sleep = true;
+      }
+      break;
+
+    case BuddyMode::Recording:
+      if (event == BuddyEvent::RecordingStopped) {
+        transition.state.mode = BuddyMode::Recognizing;
+        transition.actions.wake_screen = true;
+        transition.actions.start_recognizing = true;
+      } else if (event == BuddyEvent::RecordingFailed) {
+        transition.state.mode = BuddyMode::Home;
+        transition.actions.wake_screen = true;
+      }
+      break;
+
+    case BuddyMode::Recognizing:
+      if (event == BuddyEvent::AsrSucceeded) {
+        transition.state.mode = BuddyMode::SendingZero;
+        transition.actions.send_zero = true;
+      } else if (event == BuddyEvent::AsrFailed) {
+        transition.state.mode = BuddyMode::Home;
+        transition.actions.wake_screen = true;
+      }
+      break;
+
+    case BuddyMode::SendingZero:
+      if (event == BuddyEvent::ZeroSucceeded) {
+        transition.state.mode = BuddyMode::MessageSent;
+        transition.state.has_unread_assistant = false;
+        transition.state.poll_backoff_index = 0;
+        transition.actions.wake_screen = true;
+        transition.actions.show_message_sent = true;
+      } else if (event == BuddyEvent::ZeroFailed) {
+        transition.state.mode = BuddyMode::Home;
+        transition.actions.wake_screen = true;
+      }
+      break;
+
+    case BuddyMode::MessageSent:
+      if (event == BuddyEvent::MessageSentElapsed) {
+        transition.state.mode = BuddyMode::Polling;
+        transition.actions.reset_poll_backoff = true;
+        transition.actions.schedule_poll = true;
+        transition.actions.deep_sleep = true;
+        transition.actions.next_poll_delay_ms = pollDelay(0);
+      } else if (event == BuddyEvent::LongPress) {
+        enterRecording();
+      } else if (event == BuddyEvent::ShortPress) {
+        transition.actions.wake_screen = true;
+      }
+      break;
+
+    case BuddyMode::Polling:
+      if (event == BuddyEvent::ShortPress) {
+        transition.state.mode = BuddyMode::Home;
+        transition.state.poll_backoff_index = 0;
+        transition.actions.wake_screen = true;
+        transition.actions.stop_polling = true;
+        transition.actions.reset_poll_backoff = true;
+      } else if (event == BuddyEvent::LongPress) {
+        enterRecording();
+      } else if (event == BuddyEvent::PollTimerWake) {
+        transition.actions.poll_now = true;
+      } else if (event == BuddyEvent::PollTimerNoMessage) {
+        if (transition.state.poll_backoff_index + 1 < poll_backoff_count) {
+          ++transition.state.poll_backoff_index;
+        }
+        transition.actions.schedule_poll = true;
+        transition.actions.deep_sleep = true;
+        transition.actions.next_poll_delay_ms = pollDelay(transition.state.poll_backoff_index);
+      } else if (event == BuddyEvent::PollTimerMessage) {
+        transition.state.mode = BuddyMode::Home;
+        transition.state.has_unread_assistant = true;
+        transition.state.poll_backoff_index = 0;
+        transition.actions.wake_screen = true;
+        transition.actions.stop_polling = true;
+      }
+      break;
+  }
+
+  return transition;
 }
 
 std::string trim(std::string value) {
@@ -576,6 +773,46 @@ ZeroMessagesResult parseZeroMessagesResponse(std::string body) {
     cursor = obj_end + 1;
   }
   return result;
+}
+
+std::string buildAssistantQueueManifest(size_t count,
+                                        size_t index,
+                                        bool waiting,
+                                        uint8_t next_delay_index,
+                                        std::string last_seen_message_id) {
+  if (index > count) {
+    index = count;
+  }
+  return std::string("{\"count\":") + std::to_string(count) +
+         ",\"index\":" + std::to_string(index) +
+         ",\"waiting\":" + (waiting ? "true" : "false") +
+         ",\"next_delay_index\":" + std::to_string(next_delay_index) +
+         ",\"last_seen_message_id\":\"" + escapeJsonString(last_seen_message_id) + "\"}";
+}
+
+AssistantQueueManifest parseAssistantQueueManifest(std::string body, size_t max_count) {
+  AssistantQueueManifest manifest;
+  size_t count = 0;
+  size_t index = 0;
+  size_t next_delay_index = 0;
+  bool waiting = false;
+  if (!extractJsonUnsigned(body, "count", &count) ||
+      !extractJsonUnsigned(body, "index", &index)) {
+    return manifest;
+  }
+  if (count > max_count || index > count) {
+    return manifest;
+  }
+  extractJsonBool(body, "waiting", &waiting);
+  extractJsonUnsigned(body, "next_delay_index", &next_delay_index);
+
+  manifest.ok = true;
+  manifest.count = count;
+  manifest.index = index;
+  manifest.waiting = waiting;
+  manifest.next_delay_index = static_cast<uint8_t>(std::min<size_t>(next_delay_index, 255));
+  manifest.last_seen_message_id = extractJsonString(body, "last_seen_message_id");
+  return manifest;
 }
 
 void appendU32(std::vector<uint8_t>& out, uint32_t value) {

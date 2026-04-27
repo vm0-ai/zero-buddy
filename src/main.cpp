@@ -37,14 +37,17 @@
 #define ZB_SERIAL_BEGIN(...) Serial.begin(__VA_ARGS__)
 #define ZB_LOG_PRINTF(...) Serial.printf(__VA_ARGS__)
 #define ZB_LOG_PRINTLN(...) Serial.println(__VA_ARGS__)
+#define ZB_LOG_FLUSH() Serial.flush()
 #else
 #define ZB_SERIAL_BEGIN(...) do {} while (0)
 #define ZB_LOG_PRINTF(...) do {} while (0)
 #define ZB_LOG_PRINTLN(...) do {} while (0)
+#define ZB_LOG_FLUSH() do {} while (0)
 #endif
 
 namespace {
-constexpr int kLedPin = 10;
+constexpr gpio_num_t kLedGpio = GPIO_NUM_10;
+constexpr int kLedPin = static_cast<int>(kLedGpio);
 constexpr int kBuzzerPin = 2;
 constexpr int kMicClockPin = 0;
 constexpr int kMicDataPin = 34;
@@ -89,10 +92,18 @@ constexpr unsigned long kAsrTestDurationMs = 2000;
 constexpr uint32_t kAssistantLedBlinkIntervalMs = 3000;
 constexpr uint32_t kAssistantLedBlinkPulseMs = 120;
 constexpr uint32_t kScreenAwakeWindowMs = 10UL * 1000UL;
-constexpr uint32_t kAssistantPollWindowMs = 10UL * 60UL * 1000UL;
+constexpr uint32_t kPostSendAwakeWindowMs = 3UL * 1000UL;
+constexpr uint32_t kAssistantArrivedAwakeWindowMs = 3UL * 1000UL;
+constexpr uint32_t kPollAbortHoldMs = 550;
 constexpr uint8_t kActiveCpuMhz = 240;
+constexpr uint8_t kPollCpuMhz = 80;
+#if ZERO_BUDDY_SERIAL_LOGS
+constexpr uint8_t kIdleCpuMhz = 80;
+#else
 constexpr uint8_t kIdleCpuMhz = 40;
+#endif
 constexpr uint16_t kAwakeIdleDelayMs = 10;
+constexpr uint16_t kScreenOffIdleDelayMs = 50;
 constexpr bool kDeepSleepOnIdle = true;
 
 constexpr char kAsrWsHost[] = "openspeech.bytedance.com";
@@ -102,25 +113,25 @@ constexpr char kAsrWsPath[] = "/api/v3/sauc/bigmodel_nostream";
 constexpr char kZeroApiUrl[] = "https://api.vm0.ai/api/v1/chat-threads/messages";
 constexpr char kZeroHost[] = "api.vm0.ai";
 constexpr uint16_t kZeroPort = 443;
-constexpr unsigned long kZeroPollIntervalMs = 10000;
-constexpr unsigned long kZeroRequestDeadlineMs = 10000;
+constexpr unsigned long kZeroRequestDeadlineMs = 25000;
+constexpr unsigned long kWifiConnectAttemptMs = 12000;
+constexpr unsigned long kPollWifiConnectAttemptMs = 5000;
 constexpr uint32_t kZeroPollBackoffMs[] = {
-    15UL * 1000UL,
     30UL * 1000UL,
     60UL * 1000UL,
     2UL * 60UL * 1000UL,
     4UL * 60UL * 1000UL,
     8UL * 60UL * 1000UL,
-    10UL * 60UL * 1000UL,
 };
 constexpr uint8_t kZeroPollBackoffCount =
     sizeof(kZeroPollBackoffMs) / sizeof(kZeroPollBackoffMs[0]);
-constexpr uint8_t kZeroPollDeepSleepStartIndex = 2;
+constexpr uint8_t kZeroPollDeepSleepStartIndex = 0;
 constexpr uint32_t kPollRtcMagic = 0x5A0B0DD1UL;
 constexpr size_t kRtcMessageIdBytes = 160;
 constexpr bool kBootZeroSelfTest = false;
 constexpr char kZeroResponsePath[] = "/zero_resp.json";
 constexpr char kAsrRecordPcmPath[] = "/asr_rec.pcm";
+constexpr char kAssistantQueueManifestPath[] = "/assistant_queue.json";
 
 uint8_t g_audio_buffer[kReadLen] = {0};
 uint8_t g_stream_chunk[kStreamChunkBytes] = {0};
@@ -152,6 +163,8 @@ uint32_t g_raw_sample_count = 0;
 uint32_t g_raw_clipped_samples = 0;
 bool g_wifi_connected = false;
 bool g_wifi_connecting = false;
+bool g_background_polling = false;
+bool g_poll_interrupted_by_button = false;
 bool g_recording = false;
 bool g_uploading = false;
 bool g_asr_connect_started = false;
@@ -165,19 +178,23 @@ String g_zero_last_seen_message_id = "";
 String g_current_assistant_message = "";
 size_t g_pending_assistant_count = 0;
 size_t g_pending_message_index = 0;
-unsigned long g_last_zero_poll_ms = 0;
 unsigned long g_last_scroll_ms = 0;
 unsigned long g_last_anim_ms = 0;
+unsigned long g_poll_button_down_ms = 0;
+unsigned long g_button_wake_down_ms = 0;
 size_t g_scroll_line = 0;
 uint8_t g_screen_brightness_level = kDefaultScreenBrightnessLevel;
 bool g_btn_b_hold_seen = false;
 bool g_suppress_wake_short_action = false;
+bool g_button_wake_poll_pending = false;
 std::vector<String> g_current_message_lines;
 bool g_flash_store_ready = false;
 zero_buddy::NotificationBlinkState g_assistant_led_blink;
 zero_buddy::PowerWindowState g_power;
+zero_buddy::BuddyState g_buddy_state;
 uint8_t g_current_cpu_mhz = 0;
 bool g_wifi_power_save_enabled = false;
+unsigned long g_message_sent_since_ms = 0;
 
 struct AssistantPollRtcState {
   uint32_t magic = 0;
@@ -187,6 +204,9 @@ struct AssistantPollRtcState {
 };
 
 RTC_DATA_ATTR AssistantPollRtcState g_poll_rtc;
+RTC_DATA_ATTR bool g_rtc_battery_known = false;
+RTC_DATA_ATTR bool g_rtc_battery_charging = false;
+RTC_DATA_ATTR int32_t g_rtc_battery_level_percent = -1;
 
 struct BatteryUiState {
   int32_t level_percent = -1;
@@ -214,6 +234,13 @@ enum class NetworkTask : uint8_t {
   Zero,
 };
 
+enum class AssistantPollRunResult : uint8_t {
+  Skipped,
+  NoMessage,
+  MessageReceived,
+  Interrupted,
+};
+
 enum class AsrConnectState : uint8_t {
   Idle,
   Connecting,
@@ -236,13 +263,22 @@ void refreshBatteryStatus(bool force);
 void applyRuntimePowerMode();
 void setCpuFrequencyIfNeeded(uint8_t mhz);
 void setWifiPowerSave(bool enable);
+void setBuddyMode(zero_buddy::BuddyMode mode, const char* reason);
+zero_buddy::BuddyTransition dispatchBuddyEvent(zero_buddy::BuddyEvent event, const char* reason);
 bool pollZeroAssistantMessages(bool baseline_only, String* error_out);
-void pollZeroAssistantMessagesAndSchedule();
+bool pollZeroAssistantMessagesRequest(bool baseline_only,
+                                      bool use_since_id,
+                                      uint8_t limit,
+                                      size_t* added_count_out,
+                                      String* error_out);
+AssistantPollRunResult pollZeroAssistantMessagesAndSchedule(bool reset_backoff_on_empty = false,
+                                                            bool sleep_after_message = false);
 void scheduleNextAssistantPoll();
 void prepareAssistantPollTimerSleep();
 void restoreAssistantPollFromRtc();
 void persistAssistantPollLastSeen();
 void cancelAssistantPolling(const char* reason);
+void enterHomeFromAssistantPolling(const char* reason);
 void closeStreamAsrSession();
 void clearRecordBacklog();
 void removeFlashFileIfExists(const char* path);
@@ -251,13 +287,19 @@ void cycleScreenBrightness();
 void wakeScreen(bool user_action, const char* reason);
 void enterScreenSleep(const char* reason);
 void enterIdleDeepSleep(const char* reason);
-void runLightSleepIfIdle();
 void beginAssistantPollingWindow();
 void stopAssistantPollingWindow();
-bool assistantPollingWindowActive();
+void notifyAssistantMessageArrived();
+void releaseStatusLedDeepSleepHold();
+void prepareStatusLedDeepSleepHold(bool on);
 void clearAssistantLedBlinkForUserAction();
 String currentPendingAssistantMessage();
 void advancePendingAssistantMessage();
+String trimToWidth(const String& text, size_t max_len);
+void saveAssistantQueueState();
+bool restoreAssistantQueueState();
+void clearAssistantMessages();
+bool loadCurrentAssistantMessage(String* error_out);
 void resetMessageScroll();
 void rebuildCurrentMessageLayout();
 bool startAsyncAsrConnect(String* error_out);
@@ -266,7 +308,10 @@ void waitForAsrConnectTask(uint32_t timeout_ms);
 void resetAsrConnectStateIfDone();
 bool writeRecordFlash(const uint8_t* data, size_t data_len);
 void closeRecordFlash();
-void connectWifi();
+bool wifiConnectedNow();
+bool connectWifi(uint32_t attempt_timeout_ms = kWifiConnectAttemptMs);
+bool pollAbortRequested();
+void startNormalConversationCapture();
 
 enum class NormalScene : uint8_t {
   WifiConnecting,
@@ -281,26 +326,31 @@ enum class NormalScene : uint8_t {
 };
 
 NormalScene currentNormalScene() {
-  if (!g_wifi_connected) {
-    return g_wifi_connecting ? NormalScene::WifiConnecting : NormalScene::WifiOffline;
-  }
   if (!currentPendingAssistantMessage().isEmpty()) {
     return NormalScene::Reply;
   }
-  if (g_recording) {
-    return NormalScene::Recording;
+  if (g_wifi_connecting) {
+    return NormalScene::WifiConnecting;
   }
-  if (g_uploading && g_status == "recognizing") {
-    return NormalScene::Recognizing;
-  }
-  if (g_status == "sending zero") {
-    return NormalScene::Sending;
-  }
-  if (g_waiting_for_assistant || g_status == "sent to zero") {
-    return NormalScene::Waiting;
+  switch (g_buddy_state.mode) {
+    case zero_buddy::BuddyMode::Recording:
+      return NormalScene::Recording;
+    case zero_buddy::BuddyMode::Recognizing:
+      return NormalScene::Recognizing;
+    case zero_buddy::BuddyMode::SendingZero:
+      return NormalScene::Sending;
+    case zero_buddy::BuddyMode::MessageSent:
+    case zero_buddy::BuddyMode::Polling:
+      return NormalScene::Waiting;
+    case zero_buddy::BuddyMode::Home:
+    case zero_buddy::BuddyMode::DeepSleep:
+      break;
   }
   if (g_status == "failed" || g_status == "zero failed" || g_status == "audio low") {
     return NormalScene::Failed;
+  }
+  if (!g_wifi_connected) {
+    return NormalScene::WifiOffline;
   }
   return NormalScene::Idle;
 }
@@ -708,7 +758,8 @@ void applyScreenBrightness() {
 }
 
 bool runtimeBusy() {
-  return g_recording || g_uploading || g_wifi_connecting || g_network_task != NetworkTask::None;
+  return g_recording || g_uploading || g_wifi_connecting || g_background_polling ||
+         g_network_task != NetworkTask::None;
 }
 
 void setCpuFrequencyIfNeeded(uint8_t mhz) {
@@ -737,8 +788,102 @@ void setWifiPowerSave(bool enable) {
 
 void applyRuntimePowerMode() {
   const bool busy = runtimeBusy();
+  if (g_background_polling) {
+    setWifiPowerSave(false);
+    setCpuFrequencyIfNeeded(kPollCpuMhz);
+    return;
+  }
   setWifiPowerSave(!busy);
   setCpuFrequencyIfNeeded(busy ? kActiveCpuMhz : kIdleCpuMhz);
+}
+
+const char* buddyModeLabel(zero_buddy::BuddyMode mode) {
+  switch (mode) {
+    case zero_buddy::BuddyMode::DeepSleep:
+      return "DeepSleep";
+    case zero_buddy::BuddyMode::Home:
+      return "Home";
+    case zero_buddy::BuddyMode::Recording:
+      return "Recording";
+    case zero_buddy::BuddyMode::Recognizing:
+      return "Recognizing";
+    case zero_buddy::BuddyMode::SendingZero:
+      return "SendingZero";
+    case zero_buddy::BuddyMode::MessageSent:
+      return "MessageSent";
+    case zero_buddy::BuddyMode::Polling:
+      return "Polling";
+  }
+  return "?";
+}
+
+String idPreview(const String& id) {
+  if (id.isEmpty()) {
+    return "<empty>";
+  }
+  if (id.length() <= 14) {
+    return id;
+  }
+  return id.substring(0, 8) + ".." + id.substring(id.length() - 4);
+}
+
+void logBuddySnapshot(const char* tag) {
+  ZB_LOG_PRINTF(
+      "STATE %s mode=%s wait=%d rtc_active=%d rtc_idx=%u pending=%u index=%u unread=%d "
+      "screen=%d wifi=%d status=%s result=%s lastSeen=%s heap=%u\n",
+      tag != nullptr ? tag : "?",
+      buddyModeLabel(g_buddy_state.mode),
+      g_waiting_for_assistant ? 1 : 0,
+      (g_poll_rtc.magic == kPollRtcMagic && g_poll_rtc.active) ? 1 : 0,
+      static_cast<unsigned>(g_poll_rtc.next_delay_index),
+      static_cast<unsigned>(g_pending_assistant_count),
+      static_cast<unsigned>(g_pending_message_index),
+      !currentPendingAssistantMessage().isEmpty() ? 1 : 0,
+      g_power.screen_awake ? 1 : 0,
+      wifiConnectedNow() ? 1 : 0,
+      g_status.c_str(),
+      trimToWidth(g_result, 32).c_str(),
+      idPreview(g_zero_last_seen_message_id).c_str(),
+      static_cast<unsigned>(ESP.getFreeHeap()));
+}
+
+void syncBuddyCompatibilityFlags() {
+  g_buddy_state.has_unread_assistant = !currentPendingAssistantMessage().isEmpty();
+  g_waiting_for_assistant = g_buddy_state.mode == zero_buddy::BuddyMode::Polling;
+  if (g_waiting_for_assistant) {
+    g_poll_rtc.magic = kPollRtcMagic;
+    g_poll_rtc.active = true;
+    g_poll_rtc.next_delay_index = g_buddy_state.poll_backoff_index;
+  }
+}
+
+void setBuddyMode(zero_buddy::BuddyMode mode, const char* reason) {
+  if (g_buddy_state.mode != mode) {
+    ZB_LOG_PRINTF("Buddy state: %s -> %s (%s)\n",
+                  buddyModeLabel(g_buddy_state.mode),
+                  buddyModeLabel(mode),
+                  reason != nullptr ? reason : "unknown");
+  }
+  g_buddy_state.mode = mode;
+  syncBuddyCompatibilityFlags();
+  logBuddySnapshot("mode-set");
+}
+
+zero_buddy::BuddyTransition dispatchBuddyEvent(zero_buddy::BuddyEvent event,
+                                               const char* reason) {
+  const auto before = g_buddy_state.mode;
+  auto transition = zero_buddy::applyBuddyEvent(
+      g_buddy_state, event, kZeroPollBackoffMs, kZeroPollBackoffCount);
+  g_buddy_state = transition.state;
+  syncBuddyCompatibilityFlags();
+  if (before != g_buddy_state.mode) {
+    ZB_LOG_PRINTF("Buddy event: %s -> %s (%s)\n",
+                  buddyModeLabel(before),
+                  buddyModeLabel(g_buddy_state.mode),
+                  reason != nullptr ? reason : "event");
+  }
+  logBuddySnapshot(reason != nullptr ? reason : "event");
+  return transition;
 }
 
 void cycleScreenBrightness() {
@@ -756,9 +901,6 @@ void wakeScreen(bool user_action, const char* reason) {
   const uint32_t now = millis();
   const bool was_awake = g_power.screen_awake;
   zero_buddy::wakePowerWindow(&g_power, now, kScreenAwakeWindowMs);
-  if (g_waiting_for_assistant) {
-    zero_buddy::startAssistantPollWindow(&g_power, now, kAssistantPollWindowMs);
-  }
   applyRuntimePowerMode();
   applyScreenBrightness();
   if (!was_awake) {
@@ -772,6 +914,11 @@ void wakeScreen(bool user_action, const char* reason) {
 
 void keepScreenAwakeForWork() {
   zero_buddy::wakePowerWindow(&g_power, millis(), kScreenAwakeWindowMs);
+  applyScreenBrightness();
+}
+
+void keepScreenAwakeBriefly(uint32_t duration_ms) {
+  zero_buddy::wakePowerWindow(&g_power, millis(), duration_ms);
   applyScreenBrightness();
 }
 
@@ -789,7 +936,8 @@ void enterScreenSleep(const char* reason) {
 }
 
 void beginAssistantPollingWindow() {
-  g_waiting_for_assistant = true;
+  g_buddy_state.poll_backoff_index = 0;
+  setBuddyMode(zero_buddy::BuddyMode::Polling, "begin assistant poll");
   g_poll_rtc.magic = kPollRtcMagic;
   g_poll_rtc.active = true;
   g_poll_rtc.next_delay_index = 0;
@@ -800,10 +948,6 @@ void stopAssistantPollingWindow() {
   cancelAssistantPolling("stop");
 }
 
-bool assistantPollingWindowActive() {
-  return zero_buddy::assistantPollWindowActive(g_power, millis());
-}
-
 uint32_t zeroPollBackoffMs(uint8_t index) {
   if (index >= kZeroPollBackoffCount) {
     return kZeroPollBackoffMs[kZeroPollBackoffCount - 1];
@@ -812,7 +956,8 @@ uint32_t zeroPollBackoffMs(uint8_t index) {
 }
 
 bool assistantPollNextWaitUsesDeepSleep() {
-  return g_waiting_for_assistant &&
+  return g_buddy_state.mode == zero_buddy::BuddyMode::Polling &&
+         g_waiting_for_assistant &&
          g_poll_rtc.magic == kPollRtcMagic &&
          g_poll_rtc.active &&
          g_poll_rtc.next_delay_index >= kZeroPollDeepSleepStartIndex;
@@ -829,10 +974,12 @@ void restoreAssistantPollFromRtc() {
   if (g_poll_rtc.magic != kPollRtcMagic || !g_poll_rtc.active) {
     return;
   }
-  g_waiting_for_assistant = true;
+  g_buddy_state.poll_backoff_index =
+      min(g_poll_rtc.next_delay_index, static_cast<uint8_t>(kZeroPollBackoffCount - 1));
+  setBuddyMode(zero_buddy::BuddyMode::Polling, "restore rtc poll");
   g_zero_last_seen_message_id = String(g_poll_rtc.last_seen_message_id);
   g_status = "waiting assistant";
-  g_result = "polling zero";
+  g_result = "BtnA check";
 }
 
 void clearAssistantPollRtc() {
@@ -843,14 +990,26 @@ void clearAssistantPollRtc() {
 }
 
 void scheduleNextAssistantPoll() {
-  if (!g_waiting_for_assistant || !currentPendingAssistantMessage().isEmpty()) {
+  if (g_buddy_state.mode != zero_buddy::BuddyMode::Polling ||
+      !g_waiting_for_assistant || !currentPendingAssistantMessage().isEmpty()) {
+    ZB_LOG_PRINTF("POLL schedule skipped mode=%s wait=%d unread=%d pending=%u/%u\n",
+                  buddyModeLabel(g_buddy_state.mode),
+                  g_waiting_for_assistant ? 1 : 0,
+                  !currentPendingAssistantMessage().isEmpty() ? 1 : 0,
+                  static_cast<unsigned>(g_pending_message_index),
+                  static_cast<unsigned>(g_pending_assistant_count));
     return;
   }
+  g_poll_rtc.next_delay_index = g_buddy_state.poll_backoff_index;
   persistAssistantPollLastSeen();
   const uint32_t wait_ms = zeroPollBackoffMs(g_poll_rtc.next_delay_index);
-  g_last_zero_poll_ms = millis();
-  zero_buddy::startAssistantPollWindow(&g_power, millis(), kAssistantPollWindowMs);
+  g_status = "waiting assistant";
   g_result = "poll in " + String(wait_ms / 1000) + "s";
+  ZB_LOG_PRINTF("POLL schedule idx=%u delay_ms=%u lastSeen=%s\n",
+                static_cast<unsigned>(g_poll_rtc.next_delay_index),
+                static_cast<unsigned>(wait_ms),
+                idPreview(g_zero_last_seen_message_id).c_str());
+  saveAssistantQueueState();
 }
 
 void cancelAssistantPolling(const char* reason) {
@@ -858,15 +1017,32 @@ void cancelAssistantPolling(const char* reason) {
     ZB_LOG_PRINTF("Assistant poll cancelled: %s\n", reason != nullptr ? reason : "unknown");
   }
   g_waiting_for_assistant = false;
-  zero_buddy::stopAssistantPollWindow(&g_power);
+  if (g_buddy_state.mode == zero_buddy::BuddyMode::Polling ||
+      g_buddy_state.mode == zero_buddy::BuddyMode::MessageSent) {
+    g_buddy_state.poll_backoff_index = 0;
+  }
   clearAssistantPollRtc();
+  saveAssistantQueueState();
   applyRuntimePowerMode();
+}
+
+void enterHomeFromAssistantPolling(const char* reason) {
+  dispatchBuddyEvent(zero_buddy::BuddyEvent::ShortPress, reason);
+  cancelAssistantPolling(reason);
+  setBuddyMode(zero_buddy::BuddyMode::Home, reason);
+  g_status = "ready";
+  g_result = "hold BtnA to record";
+  keepScreenAwakeBriefly(kScreenAwakeWindowMs);
 }
 
 void prepareAssistantPollTimerSleep() {
   persistAssistantPollLastSeen();
-  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(
-      zeroPollBackoffMs(g_poll_rtc.next_delay_index)) * 1000ULL);
+  const uint32_t delay_ms = zeroPollBackoffMs(g_poll_rtc.next_delay_index);
+  ZB_LOG_PRINTF("POLL rtc timer armed idx=%u delay_ms=%u lastSeen=%s\n",
+                static_cast<unsigned>(g_poll_rtc.next_delay_index),
+                static_cast<unsigned>(delay_ms),
+                idPreview(g_zero_last_seen_message_id).c_str());
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(delay_ms) * 1000ULL);
 }
 
 bool buttonsReleasedForDeepSleep() {
@@ -877,16 +1053,29 @@ bool buttonsReleasedForDeepSleep() {
 void enterIdleDeepSleep(const char* reason) {
   if (!kDeepSleepOnIdle || g_recording || g_uploading || runtimeBusy() ||
       !buttonsReleasedForDeepSleep()) {
+    ZB_LOG_PRINTF("Power deep sleep skipped reason=%s enabled=%d rec=%d upload=%d busy=%d buttons=%d\n",
+                  reason != nullptr ? reason : "idle",
+                  kDeepSleepOnIdle ? 1 : 0,
+                  g_recording ? 1 : 0,
+                  g_uploading ? 1 : 0,
+                  runtimeBusy() ? 1 : 0,
+                  buttonsReleasedForDeepSleep() ? 1 : 0);
     return;
   }
   const bool assistant_timer_sleep = assistantPollNextWaitUsesDeepSleep();
-  if (g_waiting_for_assistant && !assistant_timer_sleep) {
+  const bool assistant_message_ready = !currentPendingAssistantMessage().isEmpty();
+  if (g_waiting_for_assistant && !assistant_timer_sleep && !assistant_message_ready) {
+    ZB_LOG_PRINTF("Power deep sleep skipped waiting without timer/message mode=%s rtc_active=%d idx=%u\n",
+                  buddyModeLabel(g_buddy_state.mode),
+                  (g_poll_rtc.magic == kPollRtcMagic && g_poll_rtc.active) ? 1 : 0,
+                  static_cast<unsigned>(g_poll_rtc.next_delay_index));
     return;
   }
   ZB_LOG_PRINTF("Power deep sleep: %s\n", reason != nullptr ? reason : "idle");
+  logBuddySnapshot("before deep sleep");
   ledcWriteTone(0, 0);
   g_buzzer_stop_ms = 0;
-  digitalWrite(kLedPin, HIGH);
+  prepareStatusLedDeepSleepHold(assistant_message_ready);
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setBrightness(0);
   WiFi.disconnect(true);
@@ -896,50 +1085,10 @@ void enterIdleDeepSleep(const char* reason) {
   if (assistant_timer_sleep) {
     prepareAssistantPollTimerSleep();
   }
+  setBuddyMode(zero_buddy::BuddyMode::DeepSleep, reason);
+  ZB_LOG_FLUSH();
   delay(30);
   esp_deep_sleep_start();
-}
-
-void runLightSleepIfIdle() {
-  if (g_power.screen_awake || g_recording || g_uploading) {
-    return;
-  }
-
-  uint64_t sleep_us = 0;
-  if (g_waiting_for_assistant && assistantPollingWindowActive() &&
-      currentPendingAssistantMessage().isEmpty()) {
-    const uint32_t now = millis();
-    const uint32_t next_poll_ms = g_last_zero_poll_ms + kZeroPollIntervalMs;
-    uint32_t wake_at_ms = next_poll_ms;
-    if (static_cast<int32_t>(g_power.assistant_poll_until_ms - wake_at_ms) < 0) {
-      wake_at_ms = g_power.assistant_poll_until_ms;
-    }
-    if (static_cast<int32_t>(wake_at_ms - now) <= 0) {
-      return;
-    }
-    sleep_us = static_cast<uint64_t>(wake_at_ms - now) * 1000ULL;
-  }
-
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  gpio_wakeup_enable(kBtnAWakePin, GPIO_INTR_LOW_LEVEL);
-  gpio_wakeup_enable(kBtnBWakePin, GPIO_INTR_LOW_LEVEL);
-  esp_sleep_enable_gpio_wakeup();
-  if (sleep_us > 0) {
-    esp_sleep_enable_timer_wakeup(sleep_us);
-  }
-  const esp_err_t sleep_err = esp_light_sleep_start();
-  gpio_wakeup_disable(kBtnAWakePin);
-  gpio_wakeup_disable(kBtnBWakePin);
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-
-  if (sleep_err != ESP_OK) {
-    ZB_LOG_PRINTF("Power light sleep failed: %d\n", static_cast<int>(sleep_err));
-    return;
-  }
-  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) {
-    g_suppress_wake_short_action = true;
-    wakeScreen(true, "button");
-  }
 }
 
 String trimToWidth(const String& text, size_t max_len) {
@@ -1326,6 +1475,101 @@ String assistantMessagePath(size_t index) {
   return "/assistant_" + String(static_cast<unsigned>(index)) + ".txt";
 }
 
+void saveAssistantQueueState() {
+  if (!g_flash_store_ready) {
+    return;
+  }
+  const uint8_t next_delay_index =
+      (g_poll_rtc.magic == kPollRtcMagic && g_poll_rtc.active) ? g_poll_rtc.next_delay_index : 0;
+  const std::string manifest = zero_buddy::buildAssistantQueueManifest(
+      g_pending_assistant_count,
+      g_pending_message_index,
+      g_buddy_state.mode == zero_buddy::BuddyMode::Polling,
+      next_delay_index,
+      g_zero_last_seen_message_id.c_str());
+  File file = LittleFS.open(kAssistantQueueManifestPath, "w");
+  if (!file) {
+    ZB_LOG_PRINTLN("assistant manifest open failed");
+    return;
+  }
+  file.print(manifest.c_str());
+  file.close();
+  ZB_LOG_PRINTF("assistant manifest saved count=%u index=%u waiting=%d idx=%u lastSeen=%s\n",
+                static_cast<unsigned>(g_pending_assistant_count),
+                static_cast<unsigned>(g_pending_message_index),
+                g_buddy_state.mode == zero_buddy::BuddyMode::Polling ? 1 : 0,
+                static_cast<unsigned>(next_delay_index),
+                idPreview(g_zero_last_seen_message_id).c_str());
+}
+
+bool restoreAssistantQueueState() {
+  if (!g_flash_store_ready || !LittleFS.exists(kAssistantQueueManifestPath)) {
+    return false;
+  }
+  File file = LittleFS.open(kAssistantQueueManifestPath, FILE_READ);
+  if (!file) {
+    ZB_LOG_PRINTLN("assistant manifest read failed");
+    return false;
+  }
+  String body;
+  body.reserve(min(static_cast<size_t>(file.size()), static_cast<size_t>(512)));
+  while (file.available() && body.length() < 512) {
+    body += static_cast<char>(file.read());
+  }
+  file.close();
+
+  const auto manifest =
+      zero_buddy::parseAssistantQueueManifest(body.c_str(), kMaxPendingAssistantMessages);
+  if (!manifest.ok) {
+    ZB_LOG_PRINTLN("assistant manifest invalid");
+    return false;
+  }
+  ZB_LOG_PRINTF("assistant manifest restore count=%u index=%u waiting=%d idx=%u lastSeen=%s\n",
+                static_cast<unsigned>(manifest.count),
+                static_cast<unsigned>(manifest.index),
+                manifest.waiting ? 1 : 0,
+                static_cast<unsigned>(manifest.next_delay_index),
+                idPreview(String(manifest.last_seen_message_id.c_str())).c_str());
+
+  g_pending_assistant_count = manifest.count;
+  g_pending_message_index = manifest.index;
+  g_zero_last_seen_message_id = manifest.last_seen_message_id.c_str();
+  if (manifest.waiting && g_pending_assistant_count == 0) {
+    g_buddy_state.poll_backoff_index = min(manifest.next_delay_index,
+                                           static_cast<uint8_t>(kZeroPollBackoffCount - 1));
+    g_poll_rtc.magic = kPollRtcMagic;
+    g_poll_rtc.active = true;
+    g_poll_rtc.next_delay_index = g_buddy_state.poll_backoff_index;
+    persistAssistantPollLastSeen();
+    setBuddyMode(zero_buddy::BuddyMode::Polling, "restore manifest poll");
+    g_status = "waiting assistant";
+    g_result = "BtnA check";
+    return true;
+  }
+
+  if (g_pending_message_index < g_pending_assistant_count) {
+    setBuddyMode(zero_buddy::BuddyMode::Home, "restore assistant queue");
+    g_status = "assistant reply";
+    g_result = "BtnA next";
+    String load_error;
+    if (!loadCurrentAssistantMessage(&load_error)) {
+      ZB_LOG_PRINTF("assistant restore failed: %s\n", load_error.c_str());
+      clearAssistantMessages();
+      return false;
+    }
+    notifyAssistantMessageArrived();
+    ZB_LOG_PRINTLN("assistant restore -> blink pending");
+    return true;
+  }
+
+  g_pending_assistant_count = 0;
+  g_pending_message_index = 0;
+  g_current_assistant_message = "";
+  g_current_message_lines.clear();
+  setBuddyMode(zero_buddy::BuddyMode::Home, "restore empty queue");
+  return true;
+}
+
 void clearAssistantMessages() {
   if (g_flash_store_ready) {
     for (size_t i = 0; i < kMaxPendingAssistantMessages; ++i) {
@@ -1338,6 +1582,8 @@ void clearAssistantMessages() {
   g_current_assistant_message = "";
   g_current_message_lines.clear();
   resetMessageScroll();
+  g_buddy_state.has_unread_assistant = false;
+  saveAssistantQueueState();
 }
 
 bool saveAssistantMessageToFlash(size_t index, const String& message, String* error_out) {
@@ -1422,7 +1668,8 @@ bool acquireNetworkTask(NetworkTask task, String* error_out) {
     return false;
   }
   g_network_task = task;
-  setCpuFrequencyIfNeeded(kActiveCpuMhz);
+  setCpuFrequencyIfNeeded(g_background_polling && task == NetworkTask::Zero ? kPollCpuMhz
+                                                                             : kActiveCpuMhz);
   setWifiPowerSave(false);
   ZB_LOG_PRINTF("NETWORK acquire %s\n", networkTaskLabel(task));
   return true;
@@ -1440,12 +1687,43 @@ void setStatusLed(bool on) {
   digitalWrite(kLedPin, on ? LOW : HIGH);
 }
 
+void releaseStatusLedDeepSleepHold() {
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis(kLedGpio);
+}
+
+void prepareStatusLedDeepSleepHold(bool on) {
+  releaseStatusLedDeepSleepHold();
+  setStatusLed(on);
+  if (!on) {
+    return;
+  }
+  const esp_err_t hold_err = gpio_hold_en(kLedGpio);
+  gpio_deep_sleep_hold_en();
+  ZB_LOG_PRINTF("LED deep sleep hold on gpio=%d err=%d\n",
+                static_cast<int>(kLedGpio),
+                static_cast<int>(hold_err));
+}
+
 void applyAssistantLedBlinkEvent(zero_buddy::NotificationBlinkEvent event) {
   const auto result = zero_buddy::updateNotificationBlink(&g_assistant_led_blink,
                                                           event,
                                                           static_cast<uint32_t>(millis()),
                                                           kAssistantLedBlinkIntervalMs,
                                                           kAssistantLedBlinkPulseMs);
+  if (event != zero_buddy::NotificationBlinkEvent::Tick || result.led_changed) {
+    const char* event_label = "tick";
+    if (event == zero_buddy::NotificationBlinkEvent::AssistantArrived) {
+      event_label = "assistant";
+    } else if (event == zero_buddy::NotificationBlinkEvent::UserAction) {
+      event_label = "user";
+    }
+    ZB_LOG_PRINTF("LED blink event=%s pending=%d on=%d changed=%d\n",
+                  event_label,
+                  result.pending ? 1 : 0,
+                  result.led_on ? 1 : 0,
+                  result.led_changed ? 1 : 0);
+  }
   if (result.led_changed) {
     setStatusLed(result.led_on);
   }
@@ -1556,11 +1834,15 @@ void advancePendingAssistantMessage() {
     ++g_pending_message_index;
   }
   if (g_pending_message_index >= g_pending_assistant_count) {
-    clearAssistantMessages();
     stopAssistantPollingWindow();
+    clearAssistantMessages();
+    dispatchBuddyEvent(zero_buddy::BuddyEvent::UnreadConsumed, "assistant consumed");
+    setBuddyMode(zero_buddy::BuddyMode::Home, "assistant consumed");
     g_status = "ready";
     g_result = "hold BtnA to record";
   } else {
+    g_buddy_state.has_unread_assistant = true;
+    saveAssistantQueueState();
     String load_error;
     if (!loadCurrentAssistantMessage(&load_error)) {
       ZB_LOG_PRINTF("assistant load failed: %s\n", load_error.c_str());
@@ -1626,6 +1908,24 @@ bool isTimeoutErrorString(const String& msg) {
 bool isConnResetErrorString(const String& msg) {
   return msg.indexOf("0050") >= 0 || msg.indexOf("conn reset") >= 0 ||
          msg.indexOf("connection reset") >= 0;
+}
+
+bool pollAbortRequested() {
+  if (!g_background_polling || g_recording || g_uploading ||
+      g_test_mode != TestMode::Normal) {
+    g_poll_button_down_ms = 0;
+    return false;
+  }
+  if (digitalRead(static_cast<int>(kBtnAWakePin)) != LOW) {
+    g_poll_button_down_ms = 0;
+    return false;
+  }
+  const unsigned long now = millis();
+  if (g_poll_button_down_ms == 0) {
+    g_poll_button_down_ms = now == 0 ? 1 : now;
+  }
+  g_poll_interrupted_by_button = true;
+  return true;
 }
 
 String normalizeTlsError(const String& msg) {
@@ -1760,6 +2060,10 @@ bool handshakeTlsOnSocket(TlsContext* ctx,
   ctx->fd = fd;
   mbedtls_ssl_set_bio(&ctx->ssl, &ctx->fd, mbedtls_net_send, mbedtls_net_recv, nullptr);
   while ((ret = mbedtls_ssl_handshake(&ctx->ssl)) != 0) {
+    if (pollAbortRequested()) {
+      *error_out = "poll interrupted";
+      return false;
+    }
     if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
       *error_out = "hs " + tlsErrorString(ret);
       logHeap("tls socket hs failed");
@@ -1790,6 +2094,10 @@ bool handshakeTlsOverTls(TlsContext* inner,
   }
   mbedtls_ssl_set_bio(&inner->ssl, &outer->ssl, outerTlsSend, outerTlsRecv, nullptr);
   while ((ret = mbedtls_ssl_handshake(&inner->ssl)) != 0) {
+    if (pollAbortRequested()) {
+      *error_out = "poll interrupted";
+      return false;
+    }
     if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
       *error_out = "inner hs " + tlsErrorString(ret);
       logHeap("tls nested hs failed");
@@ -1821,6 +2129,10 @@ bool handshakeTlsOverTlsWithDeadline(TlsContext* inner,
   }
   mbedtls_ssl_set_bio(&inner->ssl, &outer->ssl, outerTlsSend, outerTlsRecv, nullptr);
   while ((ret = mbedtls_ssl_handshake(&inner->ssl)) != 0) {
+    if (pollAbortRequested()) {
+      *error_out = "poll interrupted";
+      return false;
+    }
     if (static_cast<long>(millis() - deadline_ms) > 0) {
       *error_out = "inner hs timeout";
       logHeap("tls nested hs timeout");
@@ -1855,6 +2167,10 @@ bool tlsWriteAll(mbedtls_ssl_context* ssl,
                  String* error_out) {
   size_t offset = 0;
   while (offset < data_len) {
+    if (pollAbortRequested()) {
+      *error_out = "poll interrupted";
+      return false;
+    }
     const int ret =
         mbedtls_ssl_write(ssl, reinterpret_cast<const unsigned char*>(data) + offset, data_len - offset);
     if (ret > 0) {
@@ -1889,6 +2205,10 @@ String tlsReadHeaders(mbedtls_ssl_context* ssl, String* error_out) {
   String out;
   uint8_t buf[256];
   while (out.indexOf("\r\n\r\n") < 0) {
+    if (pollAbortRequested()) {
+      *error_out = "poll interrupted";
+      return out;
+    }
     const int ret = mbedtls_ssl_read(ssl, buf, sizeof(buf));
     if (ret > 0) {
       out.concat(reinterpret_cast<const char*>(buf), ret);
@@ -1910,6 +2230,10 @@ String tlsReadHeaders(mbedtls_ssl_context* ssl, String* error_out) {
 bool tlsReadExact(mbedtls_ssl_context* ssl, uint8_t* buf, size_t len, String* error_out) {
   size_t offset = 0;
   while (offset < len) {
+    if (pollAbortRequested()) {
+      *error_out = "poll interrupted";
+      return false;
+    }
     const int ret = mbedtls_ssl_read(ssl, buf + offset, len - offset);
     if (ret > 0) {
       offset += ret;
@@ -2044,6 +2368,10 @@ struct HttpBodySink {
 
 bool tlsReadByte(mbedtls_ssl_context* ssl, uint8_t* byte_out, String* error_out) {
   while (true) {
+    if (pollAbortRequested()) {
+      *error_out = "poll interrupted";
+      return false;
+    }
     const int ret = mbedtls_ssl_read(ssl, byte_out, 1);
     if (ret == 1) {
       return true;
@@ -2218,6 +2546,13 @@ bool readHttpResponseToSink(mbedtls_ssl_context* ssl,
   } else {
     uint8_t buf[256];
     while (true) {
+      if (pollAbortRequested()) {
+        *error_out = "poll interrupted";
+        if (body_file) {
+          body_file.close();
+        }
+        return false;
+      }
       const int ret = mbedtls_ssl_read(ssl, buf, sizeof(buf));
       if (ret > 0) {
         if (!sink.write(buf, static_cast<size_t>(ret))) {
@@ -2322,14 +2657,26 @@ bool parseZeroMessagesFileToFlash(bool baseline_only,
   auto handleObject = [&]() {
     const auto message = zero_buddy::parseZeroMessageObject(object.c_str());
     if (!message.ok) {
+      ZB_LOG_PRINTLN("ZERO poll parse skipped invalid message object");
       return;
     }
     *newest_message_id_out = message.id.c_str();
     saw_any = true;
+    ZB_LOG_PRINTF("ZERO poll message id=%s role=%s content_len=%u baseline=%d\n",
+                  idPreview(String(message.id.c_str())).c_str(),
+                  message.role.c_str(),
+                  static_cast<unsigned>(message.content.size()),
+                  baseline_only ? 1 : 0);
     if (baseline_only || message.role != "assistant" || message.content.empty()) {
+      ZB_LOG_PRINTF("ZERO poll skip id=%s reason=%s\n",
+                    idPreview(String(message.id.c_str())).c_str(),
+                    baseline_only ? "baseline" :
+                        (message.role != "assistant" ? "not assistant" : "empty"));
       return;
     }
     if (g_pending_assistant_count >= kMaxPendingAssistantMessages) {
+      ZB_LOG_PRINTF("ZERO poll skip id=%s reason=queue full\n",
+                    idPreview(String(message.id.c_str())).c_str());
       return;
     }
     const String preprocessed_text =
@@ -2344,6 +2691,10 @@ bool parseZeroMessagesFileToFlash(bool baseline_only,
     if (saveAssistantMessageToFlash(g_pending_assistant_count, display_text, &save_error)) {
       ++g_pending_assistant_count;
       ++(*added_count_out);
+      ZB_LOG_PRINTF("ZERO poll added assistant id=%s pending_count=%u display_len=%u\n",
+                    idPreview(String(message.id.c_str())).c_str(),
+                    static_cast<unsigned>(g_pending_assistant_count),
+                    static_cast<unsigned>(display_text.length()));
     } else {
       ZB_LOG_PRINTF("assistant save failed: %s\n", save_error.c_str());
     }
@@ -2477,7 +2828,7 @@ bool zeroProxyRequest(const String& method,
                       String* response_out,
                       String* error_out,
                       const char* response_file_path = nullptr) {
-  if (!g_wifi_connected) {
+  if (!wifiConnectedNow()) {
     *error_out = "wifi offline";
     return false;
   }
@@ -2531,6 +2882,10 @@ bool zeroProxyRequest(const String& method,
     }
   };
   auto checkDeadline = [&]() -> bool {
+    if (pollAbortRequested()) {
+      *error_out = "poll interrupted";
+      return false;
+    }
     if (static_cast<long>(millis() - deadline) > 0) {
       *error_out = "zero timeout";
       return false;
@@ -2723,18 +3078,56 @@ void runBootZeroSelfTest() {
 }
 
 bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
+  ZB_LOG_PRINTF("ZERO poll begin baseline=%d lastSeen=%s pending=%u/%u\n",
+                baseline_only ? 1 : 0,
+                idPreview(g_zero_last_seen_message_id).c_str(),
+                static_cast<unsigned>(g_pending_message_index),
+                static_cast<unsigned>(g_pending_assistant_count));
+  size_t added_count = 0;
+  const bool ok = pollZeroAssistantMessagesRequest(baseline_only, true, baseline_only ? 5 : 10,
+                                                   &added_count, error_out);
+  if (!baseline_only && ok && added_count == 0 && !g_zero_last_seen_message_id.isEmpty()) {
+    ZB_LOG_PRINTLN("ZERO poll fallback: recent messages without sinceId");
+    const bool fallback_ok =
+        pollZeroAssistantMessagesRequest(false, false, 4, &added_count, error_out);
+    ZB_LOG_PRINTF("ZERO poll fallback done ok=%d added=%u error=%s\n",
+                  fallback_ok ? 1 : 0,
+                  static_cast<unsigned>(added_count),
+                  error_out != nullptr ? error_out->c_str() : "");
+    return fallback_ok;
+  }
+  ZB_LOG_PRINTF("ZERO poll done ok=%d added=%u error=%s\n",
+                ok ? 1 : 0,
+                static_cast<unsigned>(added_count),
+                error_out != nullptr ? error_out->c_str() : "");
+  return ok;
+}
+
+bool pollZeroAssistantMessagesRequest(bool baseline_only,
+                                      bool use_since_id,
+                                      uint8_t limit,
+                                      size_t* added_count_out,
+                                      String* error_out) {
+  *added_count_out = 0;
   String path = String("/api/v1/chat-threads/") + kZeroThreadId +
-                (baseline_only ? "/messages?limit=5" : "/messages?limit=10");
-  if (!g_zero_last_seen_message_id.isEmpty()) {
+                "/messages?limit=" + String(static_cast<unsigned>(limit));
+  if (use_since_id && !g_zero_last_seen_message_id.isEmpty()) {
     path += "&sinceId=" + g_zero_last_seen_message_id;
   }
+  ZB_LOG_PRINTF("ZERO poll request path=%s use_since=%d limit=%u lastSeen=%s\n",
+                path.c_str(),
+                use_since_id ? 1 : 0,
+                static_cast<unsigned>(limit),
+                idPreview(g_zero_last_seen_message_id).c_str());
 
   int code = 0;
   String response;
   if (!zeroProxyRequest("GET", path, "", &code, &response, error_out, kZeroResponsePath)) {
+    ZB_LOG_PRINTF("ZERO poll request failed error=%s\n", error_out->c_str());
     removeFlashFileIfExists(kZeroResponsePath);
     return false;
   }
+  ZB_LOG_PRINTF("ZERO poll response code=%d\n", code);
   if (code != 200) {
     *error_out = "poll " + String(code);
     removeFlashFileIfExists(kZeroResponsePath);
@@ -2745,9 +3138,17 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
   const size_t before_count = g_pending_assistant_count;
   size_t added_count = 0;
   parseZeroMessagesFileToFlash(baseline_only, &newest_message_id, &added_count, error_out);
+  *added_count_out = added_count;
   removeFlashFileIfExists(kZeroResponsePath);
-  if (!newest_message_id.isEmpty()) {
+  ZB_LOG_PRINTF("ZERO poll parsed sawNewest=%s added=%u before=%u after=%u\n",
+                idPreview(newest_message_id).c_str(),
+                static_cast<unsigned>(added_count),
+                static_cast<unsigned>(before_count),
+                static_cast<unsigned>(g_pending_assistant_count));
+  if (!newest_message_id.isEmpty() && (baseline_only || added_count > 0)) {
     g_zero_last_seen_message_id = newest_message_id;
+    ZB_LOG_PRINTF("ZERO poll lastSeen updated=%s\n",
+                  idPreview(g_zero_last_seen_message_id).c_str());
   }
   if (!baseline_only) {
     if (added_count > 0) {
@@ -2756,7 +3157,7 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
     }
     if (added_count > 0 && before_count == 0) {
       g_pending_message_index = 0;
-      g_waiting_for_assistant = true;
+      g_buddy_state.has_unread_assistant = true;
       g_status = "assistant reply";
       g_result = "BtnA next";
       beepAssistantReady();
@@ -2767,24 +3168,67 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
       drawUiFrame();
     }
   }
+  saveAssistantQueueState();
   return true;
 }
 
-void pollZeroAssistantMessagesAndSchedule() {
-  if (!g_waiting_for_assistant || !currentPendingAssistantMessage().isEmpty()) {
-    return;
+AssistantPollRunResult finishAssistantPollInterruptedByButton() {
+  const unsigned long down_since =
+      g_poll_button_down_ms == 0 ? millis() : g_poll_button_down_ms;
+  ZB_LOG_PRINTF("POLL interrupted by button down_since=%u held_ms=%u\n",
+                static_cast<unsigned>(down_since),
+                static_cast<unsigned>(millis() - down_since));
+  g_background_polling = false;
+  applyRuntimePowerMode();
+  enterHomeFromAssistantPolling("button interrupt");
+  g_button_wake_poll_pending = true;
+  g_button_wake_down_ms = down_since;
+  g_suppress_wake_short_action = true;
+  g_poll_interrupted_by_button = false;
+  g_poll_button_down_ms = 0;
+  drawUiFrame();
+  return AssistantPollRunResult::Interrupted;
+}
+
+AssistantPollRunResult pollZeroAssistantMessagesAndSchedule(bool reset_backoff_on_empty,
+                                                            bool sleep_after_message) {
+  ZB_LOG_PRINTF("POLL run enter reset=%d sleep_after_message=%d mode=%s wait=%d unread=%d idx=%u\n",
+                reset_backoff_on_empty ? 1 : 0,
+                sleep_after_message ? 1 : 0,
+                buddyModeLabel(g_buddy_state.mode),
+                g_waiting_for_assistant ? 1 : 0,
+                !currentPendingAssistantMessage().isEmpty() ? 1 : 0,
+                static_cast<unsigned>(g_poll_rtc.next_delay_index));
+  logBuddySnapshot("poll enter");
+  if (g_buddy_state.mode != zero_buddy::BuddyMode::Polling ||
+      !g_waiting_for_assistant || !currentPendingAssistantMessage().isEmpty()) {
+    ZB_LOG_PRINTLN("POLL run skipped");
+    return AssistantPollRunResult::Skipped;
   }
-  if (!g_wifi_connected) {
+  g_poll_interrupted_by_button = false;
+  g_poll_button_down_ms = 0;
+  g_background_polling = true;
+  applyRuntimePowerMode();
+
+  if (!wifiConnectedNow()) {
     g_status = "wifi connecting";
     g_result = "polling zero";
     drawUiFrame();
-    connectWifi();
+    connectWifi(kPollWifiConnectAttemptMs);
+  }
+  ZB_LOG_PRINTF("POLL wifi ready=%d ip=%s interrupted=%d\n",
+                wifiConnectedNow() ? 1 : 0,
+                g_ip_address.c_str(),
+                g_poll_interrupted_by_button ? 1 : 0);
+
+  if (g_poll_interrupted_by_button) {
+    return finishAssistantPollInterruptedByButton();
   }
 
   const size_t before_count = g_pending_assistant_count;
   bool poll_ok = false;
   String poll_error;
-  if (g_wifi_connected) {
+  if (wifiConnectedNow()) {
     g_status = "polling zero";
     g_result = "checking";
     drawUiFrame();
@@ -2792,22 +3236,54 @@ void pollZeroAssistantMessagesAndSchedule() {
     if (!poll_ok) {
       ZB_LOG_PRINTF("ZERO poll failed: %s\n", poll_error.c_str());
     }
+  } else {
+    poll_error = "wifi offline";
+  }
+
+  if (g_poll_interrupted_by_button) {
+    return finishAssistantPollInterruptedByButton();
   }
 
   if (poll_ok && g_pending_assistant_count > before_count) {
-    g_poll_rtc.active = false;
-    return;
+    ZB_LOG_PRINTF("POLL message received before=%u after=%u sleep_after=%d\n",
+                  static_cast<unsigned>(before_count),
+                  static_cast<unsigned>(g_pending_assistant_count),
+                  sleep_after_message ? 1 : 0);
+    dispatchBuddyEvent(zero_buddy::BuddyEvent::PollTimerMessage,
+                       sleep_after_message ? "timer poll message" : "poll message");
+    clearAssistantPollRtc();
+    g_waiting_for_assistant = false;
+    saveAssistantQueueState();
+    g_status = "assistant reply";
+    g_result = "BtnA next";
+    keepScreenAwakeBriefly(kScreenAwakeWindowMs);
+    ZB_LOG_PRINTLN("POLL message received -> Home awake");
+    g_background_polling = false;
+    applyRuntimePowerMode();
+    drawUiFrame();
+    return AssistantPollRunResult::MessageReceived;
   }
 
-  if (g_poll_rtc.next_delay_index < kZeroPollBackoffCount - 1) {
-    ++g_poll_rtc.next_delay_index;
+  if (reset_backoff_on_empty) {
+    g_buddy_state.poll_backoff_index = 0;
+    g_poll_rtc.next_delay_index = 0;
+    ZB_LOG_PRINTLN("POLL empty reset backoff to 0");
+  } else {
+    dispatchBuddyEvent(zero_buddy::BuddyEvent::PollTimerNoMessage, "poll no message");
   }
   scheduleNextAssistantPoll();
+  if (!poll_ok) {
+    g_status = "poll failed";
+    g_result = trimToWidth(poll_error, 36);
+  }
   drawUiFrame();
+  g_background_polling = false;
+  applyRuntimePowerMode();
   if (assistantPollNextWaitUsesDeepSleep()) {
     enterScreenSleep("poll wait");
     enterIdleDeepSleep("poll wait");
   }
+  return AssistantPollRunResult::NoMessage;
 }
 
 void initMic() {
@@ -2830,21 +3306,40 @@ void initMic() {
   ZB_LOG_PRINTLN("MIC init: M5.Mic.begin");
 }
 
-void connectWifi() {
+bool wifiConnectedNow() {
+  if (WiFi.getMode() == WIFI_OFF || WiFi.status() != WL_CONNECTED) {
+    g_wifi_connected = false;
+    g_ip_address = "offline";
+    return false;
+  }
+  g_wifi_connected = true;
+  g_ip_address = WiFi.localIP().toString();
+  return true;
+}
+
+bool connectWifi(uint32_t attempt_timeout_ms) {
   logHeap("wifi connect begin");
   WiFi.mode(WIFI_STA);
-  setCpuFrequencyIfNeeded(kActiveCpuMhz);
+  setCpuFrequencyIfNeeded(g_background_polling ? kPollCpuMhz : kActiveCpuMhz);
   setWifiPowerSave(false);
   g_wifi_connected = false;
   g_wifi_connecting = true;
   g_ip_address = "offline";
+  applyRuntimePowerMode();
   for (const auto& cred : kWifiCreds) {
     ZB_LOG_PRINTF("WiFi try: %s\n", cred.ssid);
     WiFi.disconnect(true, true);
     delay(150);
     WiFi.begin(cred.ssid, cred.password);
     const unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 12000) {
+    while (WiFi.status() != WL_CONNECTED && millis() - start < attempt_timeout_ms) {
+      if (pollAbortRequested()) {
+        g_wifi_connecting = false;
+        WiFi.disconnect(true, true);
+        logHeap("wifi poll interrupted");
+        applyRuntimePowerMode();
+        return false;
+      }
       delay(250);
     }
     if (WiFi.status() == WL_CONNECTED) {
@@ -2854,13 +3349,14 @@ void connectWifi() {
       ZB_LOG_PRINTF("WiFi connected: %s ip=%s\n", cred.ssid, g_ip_address.c_str());
       logHeap("wifi connected");
       applyRuntimePowerMode();
-      return;
+      return true;
     }
     logHeap("wifi attempt failed");
   }
   g_wifi_connecting = false;
   logHeap("wifi failed");
   applyRuntimePowerMode();
+  return false;
 }
 
 void refreshBatteryStatus(bool force) {
@@ -2878,11 +3374,20 @@ void refreshBatteryStatus(bool force) {
     if (level > 100) {
       level = 100;
     }
+    const int32_t previous = g_battery_ui.level_percent >= 0
+                                 ? g_battery_ui.level_percent
+                                 : (g_rtc_battery_known ? g_rtc_battery_level_percent : -1);
+    if (!g_battery_ui.charging && previous >= 0 && level < previous - 1) {
+      level = previous - 1;
+    }
     g_battery_ui.level_percent = level;
   } else {
     g_battery_ui.level_percent = -1;
   }
   g_battery_ui.last_read_ms = now == 0 ? 1 : now;
+  g_rtc_battery_known = g_battery_ui.known;
+  g_rtc_battery_charging = g_battery_ui.charging;
+  g_rtc_battery_level_percent = g_battery_ui.level_percent;
 }
 
 uint16_t batteryFillColor() {
@@ -3582,6 +4087,7 @@ void startRecording() {
   setCpuFrequencyIfNeeded(kActiveCpuMhz);
   setWifiPowerSave(false);
   stopAssistantPollingWindow();
+  clearAssistantMessages();
   setCpuFrequencyIfNeeded(kActiveCpuMhz);
   setWifiPowerSave(false);
   beepListenStart();
@@ -3692,11 +4198,13 @@ void startAsrFlashTest() {
 }
 
 void startNormalConversationCapture() {
+  dispatchBuddyEvent(zero_buddy::BuddyEvent::LongPress, "normal record");
   closeRecordFlash();
   g_record_to_flash = true;
   g_record_flash_failed = false;
   g_record_flash_bytes = 0;
   startRecording();
+  setBuddyMode(zero_buddy::BuddyMode::Recording, "normal record started");
   g_status = "recording";
   g_result = "local capture";
   drawUiFrame();
@@ -3779,6 +4287,7 @@ void finishNormalConversation() {
   closeRecordFlash();
   g_record_to_flash = false;
   beepSendStop();
+  dispatchBuddyEvent(zero_buddy::BuddyEvent::RecordingStopped, "recording released");
   g_uploading = true;
   g_status = "recognizing";
   g_result = "finishing";
@@ -3786,6 +4295,7 @@ void finishNormalConversation() {
 
   analyzeRecordedAudio();
   if (recordedAudioLooksSilent()) {
+    dispatchBuddyEvent(zero_buddy::BuddyEvent::AsrFailed, "audio low");
     g_uploading = false;
     g_status = "audio low";
     g_result = "pk " + String(g_record_peak) + " av " + String(g_record_avg_abs);
@@ -3800,6 +4310,7 @@ void finishNormalConversation() {
     drawUiFrame();
     connectWifi();
     if (!g_wifi_connected) {
+      dispatchBuddyEvent(zero_buddy::BuddyEvent::AsrFailed, "wifi failed");
       g_uploading = false;
       g_status = "wifi failed";
       g_result = "cannot send";
@@ -3841,6 +4352,7 @@ void finishNormalConversation() {
     g_uploading = false;
     ZB_LOG_PRINTF("ASR finish failed: %s\n", error.c_str());
     stopAssistantPollingWindow();
+    dispatchBuddyEvent(zero_buddy::BuddyEvent::AsrFailed, "asr failed");
     g_status = "failed";
     g_result = trimToWidth(error, 36);
     drawUiFrame();
@@ -3850,6 +4362,7 @@ void finishNormalConversation() {
   String sent_message_id;
   String zero_error;
   keepScreenAwakeForWork();
+  dispatchBuddyEvent(zero_buddy::BuddyEvent::AsrSucceeded, "asr ok");
   g_status = "sending zero";
   g_result = "posting...";
   drawUiFrame();
@@ -3860,11 +4373,16 @@ void finishNormalConversation() {
     if (!sent_message_id.isEmpty()) {
       g_zero_last_seen_message_id = sent_message_id;
     }
-    beginAssistantPollingWindow();
+    dispatchBuddyEvent(zero_buddy::BuddyEvent::ZeroSucceeded, "zero ok");
+    g_message_sent_since_ms = millis();
+    clearAssistantPollRtc();
+    saveAssistantQueueState();
+    keepScreenAwakeBriefly(kPostSendAwakeWindowMs);
     g_status = "sent to zero";
     g_result = "waiting assistant";
   } else {
     stopAssistantPollingWindow();
+    dispatchBuddyEvent(zero_buddy::BuddyEvent::ZeroFailed, "zero failed");
     g_status = "zero failed";
     g_result = trimToWidth(zero_error, 36);
   }
@@ -3919,8 +4437,6 @@ void runZeroPollTest() {
 }
 
 void startCurrentTest() {
-  stopAssistantPollingWindow();
-  clearAssistantMessages();
   switch (g_test_mode) {
     case TestMode::Normal:
       startNormalConversationCapture();
@@ -3967,10 +4483,17 @@ void setup() {
   setCpuFrequencyIfNeeded(kActiveCpuMhz);
   g_power.screen_awake = true;
   zero_buddy::wakePowerWindow(&g_power, millis(), kScreenAwakeWindowMs);
+  if (g_rtc_battery_known) {
+    g_battery_ui.known = true;
+    g_battery_ui.charging = g_rtc_battery_charging;
+    g_battery_ui.level_percent = g_rtc_battery_level_percent;
+    g_battery_ui.last_read_ms = 1;
+  }
   applyScreenBrightness();
   M5.Display.setRotation(3);
   pinMode(static_cast<int>(kBtnAWakePin), INPUT);
   pinMode(static_cast<int>(kBtnBWakePin), INPUT);
+  releaseStatusLedDeepSleepHold();
   pinMode(kLedPin, OUTPUT);
   digitalWrite(kLedPin, HIGH);
   ledcSetup(0, 2000, 8);
@@ -3981,11 +4504,16 @@ void setup() {
   delay(300);
   ZB_LOG_PRINTLN();
   ZB_LOG_PRINTLN("M5StickC Plus Doubao ASR demo booted");
+  ZB_LOG_PRINTF("BOOT wake_cause=%d button=%d timer=%d rtc_magic=0x%08lx rtc_active=%d rtc_idx=%u rtc_last=%s\n",
+                static_cast<int>(wake_cause),
+                woke_from_button_deep_sleep ? 1 : 0,
+                woke_from_timer_deep_sleep ? 1 : 0,
+                static_cast<unsigned long>(g_poll_rtc.magic),
+                g_poll_rtc.active ? 1 : 0,
+                static_cast<unsigned>(g_poll_rtc.next_delay_index),
+                idPreview(String(g_poll_rtc.last_seen_message_id)).c_str());
   g_flash_store_ready = LittleFS.begin(true);
   ZB_LOG_PRINTF("LittleFS: %s\n", g_flash_store_ready ? "ok" : "failed");
-  if (!woke_from_timer_deep_sleep) {
-    clearAssistantMessages();
-  }
   removeFlashFileIfExists(kZeroResponsePath);
   removeFlashFileIfExists(kAsrRecordPcmPath);
 
@@ -3997,24 +4525,44 @@ void setup() {
   g_status = "ready";
   g_test_mode = TestMode::Normal;
   g_result = "hold BtnA to record";
+  setBuddyMode(zero_buddy::BuddyMode::Home, "boot");
+  restoreAssistantQueueState();
+  logBuddySnapshot("after restore manifest");
   if (woke_from_timer_deep_sleep) {
     restoreAssistantPollFromRtc();
-    pollZeroAssistantMessagesAndSchedule();
+    dispatchBuddyEvent(zero_buddy::BuddyEvent::PollTimerWake, "rtc wake");
+    logBuddySnapshot("before rtc poll run");
+    pollZeroAssistantMessagesAndSchedule(false, true);
   } else if (woke_from_button_deep_sleep && g_poll_rtc.magic == kPollRtcMagic && g_poll_rtc.active) {
-    cancelAssistantPolling("button wake");
+    restoreAssistantPollFromRtc();
+    logBuddySnapshot("button wake restored poll");
+  } else if (g_test_mode == TestMode::Normal && g_waiting_for_assistant &&
+             currentPendingAssistantMessage().isEmpty()) {
+    ZB_LOG_PRINTLN("BOOT restored waiting poll -> immediate poll");
+    pollZeroAssistantMessagesAndSchedule(false, true);
   }
   drawUiFrame();
-  if (woke_from_timer_deep_sleep && g_waiting_for_assistant &&
+  if (!woke_from_button_deep_sleep && !woke_from_timer_deep_sleep &&
       currentPendingAssistantMessage().isEmpty()) {
-    enterScreenSleep("poll wait");
-    enterIdleDeepSleep("poll wait");
-  } else if (!woke_from_button_deep_sleep && !woke_from_timer_deep_sleep) {
     enterScreenSleep("boot");
     enterIdleDeepSleep("boot");
   } else if (woke_from_button_deep_sleep) {
     g_suppress_wake_short_action = true;
+    g_button_wake_poll_pending =
+        g_test_mode == TestMode::Normal && g_waiting_for_assistant &&
+        currentPendingAssistantMessage().isEmpty();
+    g_button_wake_down_ms = millis();
+    if (!currentPendingAssistantMessage().isEmpty()) {
+      clearAssistantLedBlinkForUserAction();
+      setStatusLed(false);
+      ZB_LOG_PRINTLN("BOOT button wake cleared unread LED");
+    }
+    ZB_LOG_PRINTF("BOOT button wake pending_poll=%d down_ms=%u\n",
+                  g_button_wake_poll_pending ? 1 : 0,
+                  static_cast<unsigned>(g_button_wake_down_ms));
   }
   applyRuntimePowerMode();
+  logBuddySnapshot("setup done");
 }
 
 void loop() {
@@ -4028,6 +4576,7 @@ void loop() {
   if (millis() - last_heartbeat > 5000) {
     last_heartbeat = millis();
     ZB_LOG_PRINTF("alive wifi=%d ip=%s status=%s rec=%u backlog=%u drop=%u "
+                  "mode=%s wait=%d rtc=%d/%u pending=%u/%u unread=%d "
                   "last_rec=%u last_flash=%u last_sent=%u last_drop=%u last_chunks=%u last_conn=%u "
                   "heap=%u min=%u largest=%u\n",
                   g_wifi_connected ? 1 : 0,
@@ -4036,6 +4585,13 @@ void loop() {
                   static_cast<unsigned>(g_recorded_bytes),
                   static_cast<unsigned>(g_record_backlog.size()),
                   static_cast<unsigned>(g_record_backlog.droppedBytes()),
+                  buddyModeLabel(g_buddy_state.mode),
+                  g_waiting_for_assistant ? 1 : 0,
+                  (g_poll_rtc.magic == kPollRtcMagic && g_poll_rtc.active) ? 1 : 0,
+                  static_cast<unsigned>(g_poll_rtc.next_delay_index),
+                  static_cast<unsigned>(g_pending_message_index),
+                  static_cast<unsigned>(g_pending_assistant_count),
+                  !currentPendingAssistantMessage().isEmpty() ? 1 : 0,
                   static_cast<unsigned>(g_last_asr_rec_recorded_bytes),
                   static_cast<unsigned>(g_last_asr_rec_flash_bytes),
                   static_cast<unsigned>(g_last_asr_rec_sent_bytes),
@@ -4047,17 +4603,23 @@ void loop() {
                   static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
   }
 
-  if (g_test_mode == TestMode::Normal && g_waiting_for_assistant && !g_recording &&
-      !g_uploading && currentPendingAssistantMessage().isEmpty() &&
-      millis() - g_last_zero_poll_ms >= zeroPollBackoffMs(g_poll_rtc.next_delay_index)) {
-    pollZeroAssistantMessagesAndSchedule();
-  }
-
   if (g_test_mode == TestMode::Normal) {
     const String pending = currentPendingAssistantMessage();
     if (!pending.isEmpty() && g_current_message_lines.empty()) {
       rebuildCurrentMessageLayout();
       drawUiFrame();
+    }
+    if (g_buddy_state.mode == zero_buddy::BuddyMode::MessageSent &&
+        g_message_sent_since_ms != 0 &&
+        static_cast<long>(millis() - (g_message_sent_since_ms + kPostSendAwakeWindowMs)) >= 0 &&
+        !g_recording && !g_uploading) {
+      dispatchBuddyEvent(zero_buddy::BuddyEvent::MessageSentElapsed, "message sent elapsed");
+      g_message_sent_since_ms = 0;
+      beginAssistantPollingWindow();
+      drawUiFrame();
+      enterScreenSleep("message sent");
+      enterIdleDeepSleep("message sent");
+      return;
     }
   }
 
@@ -4071,7 +4633,41 @@ void loop() {
   const bool btn_b_down = M5.BtnB.isPressed();
   if (btn_a_pressed || btn_a_released || btn_a_held ||
       btn_b_pressed || btn_b_released || btn_b_held) {
+    ZB_LOG_PRINTF("BUTTON event A[p=%d r=%d h=%d down=%d] B[p=%d r=%d h=%d down=%d] pending_poll=%d suppress=%d mode=%s\n",
+                  btn_a_pressed ? 1 : 0,
+                  btn_a_released ? 1 : 0,
+                  btn_a_held ? 1 : 0,
+                  btn_a_down ? 1 : 0,
+                  btn_b_pressed ? 1 : 0,
+                  btn_b_released ? 1 : 0,
+                  btn_b_held ? 1 : 0,
+                  btn_b_down ? 1 : 0,
+                  g_button_wake_poll_pending ? 1 : 0,
+                  g_suppress_wake_short_action ? 1 : 0,
+                  buddyModeLabel(g_buddy_state.mode));
     wakeScreen(true, "button");
+  }
+
+  if (g_button_wake_poll_pending && g_test_mode == TestMode::Normal &&
+      !g_recording && !g_uploading) {
+    if (btn_a_down) {
+      const unsigned long down_since =
+          g_button_wake_down_ms == 0 ? millis() : g_button_wake_down_ms;
+      if (millis() - down_since >= kPollAbortHoldMs) {
+        ZB_LOG_PRINTLN("BUTTON wake poll pending -> long press recording");
+        g_button_wake_poll_pending = false;
+        g_suppress_wake_short_action = false;
+        startCurrentTest();
+        return;
+      }
+    } else {
+      ZB_LOG_PRINTLN("BUTTON wake poll pending -> short press immediate poll");
+      g_button_wake_poll_pending = false;
+      g_suppress_wake_short_action = false;
+      pollZeroAssistantMessagesAndSchedule(true, false);
+      drawUiFrame();
+      return;
+    }
   }
 
   size_t bytes_read = 0;
@@ -4122,6 +4718,15 @@ void loop() {
       handleAssistantAdvance(false);
       drawUiFrame();
     }
+  }
+
+  if (g_test_mode == TestMode::Normal && btn_a_released && !g_recording && !g_uploading &&
+      g_waiting_for_assistant && currentPendingAssistantMessage().isEmpty()) {
+    ZB_LOG_PRINTLN("BUTTON release while polling -> immediate poll");
+    g_suppress_wake_short_action = false;
+    pollZeroAssistantMessagesAndSchedule(true, false);
+    drawUiFrame();
+    return;
   }
 
   if (!btn_a_down && !btn_b_down) {
@@ -4218,7 +4823,7 @@ void loop() {
     enterIdleDeepSleep("idle timeout");
   }
   applyRuntimePowerMode();
-  if (g_power.screen_awake && !runtimeBusy()) {
-    delay(kAwakeIdleDelayMs);
+  if (!runtimeBusy()) {
+    delay(g_power.screen_awake ? kAwakeIdleDelayMs : kScreenOffIdleDelayMs);
   }
 }

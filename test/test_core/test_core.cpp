@@ -15,6 +15,25 @@ std::vector<uint8_t> makeAsrServerFrame(const std::string& json) {
   return frame;
 }
 
+constexpr uint32_t kBuddyPollBackoffMs[] = {
+    30UL * 1000UL,
+    60UL * 1000UL,
+    2UL * 60UL * 1000UL,
+    4UL * 60UL * 1000UL,
+    8UL * 60UL * 1000UL,
+};
+
+void assertBuddyMode(zero_buddy::BuddyMode expected, zero_buddy::BuddyMode actual) {
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected), static_cast<uint8_t>(actual));
+}
+
+zero_buddy::BuddyTransition applyBuddyEvent(zero_buddy::BuddyState state,
+                                            zero_buddy::BuddyEvent event) {
+  return zero_buddy::applyBuddyEvent(
+      state, event, kBuddyPollBackoffMs,
+      sizeof(kBuddyPollBackoffMs) / sizeof(kBuddyPollBackoffMs[0]));
+}
+
 void test_memory_safe_conversation_pipeline() {
   uint8_t storage[8] = {0};
   zero_buddy::FixedByteQueue backlog(storage, sizeof(storage));
@@ -189,15 +208,181 @@ void test_power_window_state_machine() {
   TEST_ASSERT_TRUE(zero_buddy::shouldAutoSleepScreen(state, false, 601000));
   TEST_ASSERT_FALSE(zero_buddy::shouldAutoSleepScreen(state, true, 601000));
 
-  zero_buddy::startAssistantPollWindow(&state, 2000, 600000);
-  TEST_ASSERT_TRUE(zero_buddy::assistantPollWindowActive(state, 601999));
-  TEST_ASSERT_FALSE(zero_buddy::assistantPollWindowActive(state, 602000));
-
-  zero_buddy::stopAssistantPollWindow(&state);
-  TEST_ASSERT_FALSE(zero_buddy::assistantPollWindowActive(state, 3000));
-
   zero_buddy::sleepPowerWindow(&state);
   TEST_ASSERT_FALSE(state.screen_awake);
+}
+
+void test_assistant_queue_manifest_round_trip() {
+  const auto json =
+      zero_buddy::buildAssistantQueueManifest(3, 1, true, 2, "msg-1\\quoted");
+  const auto manifest = zero_buddy::parseAssistantQueueManifest(json, 5);
+  TEST_ASSERT_TRUE(manifest.ok);
+  TEST_ASSERT_EQUAL_UINT(3, manifest.count);
+  TEST_ASSERT_EQUAL_UINT(1, manifest.index);
+  TEST_ASSERT_TRUE(manifest.waiting);
+  TEST_ASSERT_EQUAL_UINT8(2, manifest.next_delay_index);
+  TEST_ASSERT_EQUAL_STRING("msg-1\\quoted", manifest.last_seen_message_id.c_str());
+
+  TEST_ASSERT_FALSE(zero_buddy::parseAssistantQueueManifest(
+                        R"({"count":6,"index":0,"waiting":true})", 5)
+                        .ok);
+  TEST_ASSERT_FALSE(zero_buddy::parseAssistantQueueManifest(
+                        R"({"count":2,"index":3,"waiting":true})", 5)
+                        .ok);
+}
+
+void test_buddy_home_state_events() {
+  zero_buddy::BuddyState state;
+  state.mode = zero_buddy::BuddyMode::Home;
+  state.has_unread_assistant = true;
+
+  auto transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::ShortPress);
+  assertBuddyMode(zero_buddy::BuddyMode::Home, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.state.has_unread_assistant);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+  TEST_ASSERT_FALSE(transition.actions.start_recording);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::LongPress);
+  assertBuddyMode(zero_buddy::BuddyMode::Recording, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+  TEST_ASSERT_TRUE(transition.actions.start_recording);
+  TEST_ASSERT_FALSE(transition.actions.schedule_poll);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::UnreadConsumed);
+  assertBuddyMode(zero_buddy::BuddyMode::Home, transition.state.mode);
+  TEST_ASSERT_FALSE(transition.state.has_unread_assistant);
+}
+
+void test_buddy_recording_state_events() {
+  zero_buddy::BuddyState state;
+  state.mode = zero_buddy::BuddyMode::Recording;
+
+  auto transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::RecordingStopped);
+  assertBuddyMode(zero_buddy::BuddyMode::Recognizing, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+  TEST_ASSERT_TRUE(transition.actions.start_recognizing);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::RecordingFailed);
+  assertBuddyMode(zero_buddy::BuddyMode::Home, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+  TEST_ASSERT_FALSE(transition.actions.schedule_poll);
+  TEST_ASSERT_FALSE(transition.actions.deep_sleep);
+}
+
+void test_buddy_recognizing_and_sending_events() {
+  zero_buddy::BuddyState state;
+  state.mode = zero_buddy::BuddyMode::Recognizing;
+
+  auto transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::AsrSucceeded);
+  assertBuddyMode(zero_buddy::BuddyMode::SendingZero, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.send_zero);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::AsrFailed);
+  assertBuddyMode(zero_buddy::BuddyMode::Home, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+
+  state.mode = zero_buddy::BuddyMode::SendingZero;
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::ZeroSucceeded);
+  assertBuddyMode(zero_buddy::BuddyMode::MessageSent, transition.state.mode);
+  TEST_ASSERT_EQUAL_UINT8(0, transition.state.poll_backoff_index);
+  TEST_ASSERT_TRUE(transition.actions.show_message_sent);
+  TEST_ASSERT_FALSE(transition.actions.schedule_poll);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::ZeroFailed);
+  assertBuddyMode(zero_buddy::BuddyMode::Home, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+}
+
+void test_buddy_message_sent_state_events() {
+  zero_buddy::BuddyState state;
+  state.mode = zero_buddy::BuddyMode::MessageSent;
+  state.poll_backoff_index = 3;
+
+  auto transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::MessageSentElapsed);
+  assertBuddyMode(zero_buddy::BuddyMode::Polling, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.reset_poll_backoff);
+  TEST_ASSERT_TRUE(transition.actions.schedule_poll);
+  TEST_ASSERT_TRUE(transition.actions.deep_sleep);
+  TEST_ASSERT_EQUAL_UINT32(30000, transition.actions.next_poll_delay_ms);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::LongPress);
+  assertBuddyMode(zero_buddy::BuddyMode::Recording, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.start_recording);
+  TEST_ASSERT_TRUE(transition.actions.stop_polling);
+}
+
+void test_buddy_polling_state_timer_events() {
+  zero_buddy::BuddyState state;
+  state.mode = zero_buddy::BuddyMode::Polling;
+  state.poll_backoff_index = 0;
+
+  auto transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::PollTimerWake);
+  assertBuddyMode(zero_buddy::BuddyMode::Polling, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.poll_now);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::PollTimerNoMessage);
+  assertBuddyMode(zero_buddy::BuddyMode::Polling, transition.state.mode);
+  TEST_ASSERT_EQUAL_UINT8(1, transition.state.poll_backoff_index);
+  TEST_ASSERT_TRUE(transition.actions.schedule_poll);
+  TEST_ASSERT_TRUE(transition.actions.deep_sleep);
+  TEST_ASSERT_EQUAL_UINT32(60000, transition.actions.next_poll_delay_ms);
+
+  state.poll_backoff_index = 4;
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::PollTimerNoMessage);
+  assertBuddyMode(zero_buddy::BuddyMode::Polling, transition.state.mode);
+  TEST_ASSERT_EQUAL_UINT8(4, transition.state.poll_backoff_index);
+  TEST_ASSERT_EQUAL_UINT32(8UL * 60UL * 1000UL, transition.actions.next_poll_delay_ms);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::PollTimerMessage);
+  assertBuddyMode(zero_buddy::BuddyMode::Home, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.state.has_unread_assistant);
+  TEST_ASSERT_EQUAL_UINT8(0, transition.state.poll_backoff_index);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+  TEST_ASSERT_TRUE(transition.actions.stop_polling);
+  TEST_ASSERT_FALSE(transition.actions.deep_sleep);
+}
+
+void test_buddy_polling_state_user_events() {
+  zero_buddy::BuddyState state;
+  state.mode = zero_buddy::BuddyMode::Polling;
+  state.poll_backoff_index = 3;
+
+  auto transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::ShortPress);
+  assertBuddyMode(zero_buddy::BuddyMode::Home, transition.state.mode);
+  TEST_ASSERT_EQUAL_UINT8(0, transition.state.poll_backoff_index);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+  TEST_ASSERT_FALSE(transition.actions.poll_now);
+  TEST_ASSERT_TRUE(transition.actions.reset_poll_backoff);
+  TEST_ASSERT_TRUE(transition.actions.stop_polling);
+  TEST_ASSERT_FALSE(transition.actions.schedule_poll);
+  TEST_ASSERT_FALSE(transition.actions.deep_sleep);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::LongPress);
+  assertBuddyMode(zero_buddy::BuddyMode::Recording, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+  TEST_ASSERT_TRUE(transition.actions.start_recording);
+  TEST_ASSERT_TRUE(transition.actions.stop_polling);
+}
+
+void test_buddy_deep_sleep_state_events() {
+  zero_buddy::BuddyState state;
+  state.mode = zero_buddy::BuddyMode::DeepSleep;
+  state.has_unread_assistant = true;
+
+  auto transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::ShortPress);
+  assertBuddyMode(zero_buddy::BuddyMode::Home, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.state.has_unread_assistant);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+  TEST_ASSERT_FALSE(transition.actions.start_recording);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::LongPress);
+  assertBuddyMode(zero_buddy::BuddyMode::Recording, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.wake_screen);
+  TEST_ASSERT_TRUE(transition.actions.start_recording);
+
+  transition = applyBuddyEvent(state, zero_buddy::BuddyEvent::PollTimerWake);
+  assertBuddyMode(zero_buddy::BuddyMode::Polling, transition.state.mode);
+  TEST_ASSERT_TRUE(transition.actions.poll_now);
 }
 
 }  // namespace
@@ -210,5 +395,13 @@ int main() {
   RUN_TEST(test_brightness_level_cycles);
   RUN_TEST(test_battery_fill_pixels);
   RUN_TEST(test_power_window_state_machine);
+  RUN_TEST(test_assistant_queue_manifest_round_trip);
+  RUN_TEST(test_buddy_home_state_events);
+  RUN_TEST(test_buddy_recording_state_events);
+  RUN_TEST(test_buddy_recognizing_and_sending_events);
+  RUN_TEST(test_buddy_message_sent_state_events);
+  RUN_TEST(test_buddy_polling_state_timer_events);
+  RUN_TEST(test_buddy_polling_state_user_events);
+  RUN_TEST(test_buddy_deep_sleep_state_events);
   return UNITY_END();
 }

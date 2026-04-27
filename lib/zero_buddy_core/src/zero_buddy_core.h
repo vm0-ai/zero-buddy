@@ -26,6 +26,15 @@ struct ZeroMessage {
   std::string content;
 };
 
+struct AssistantQueueManifest {
+  bool ok = false;
+  size_t count = 0;
+  size_t index = 0;
+  bool waiting = false;
+  uint8_t next_delay_index = 0;
+  std::string last_seen_message_id;
+};
+
 enum class AsrCaptureStrategy : uint8_t {
   LiveBacklog,
   FlashReplay,
@@ -71,7 +80,58 @@ struct NotificationBlinkResult {
 struct PowerWindowState {
   bool screen_awake = false;
   uint32_t awake_until_ms = 0;
-  uint32_t assistant_poll_until_ms = 0;
+};
+
+enum class BuddyMode : uint8_t {
+  DeepSleep,
+  Home,
+  Recording,
+  Recognizing,
+  SendingZero,
+  MessageSent,
+  Polling,
+};
+
+enum class BuddyEvent : uint8_t {
+  ShortPress,
+  LongPress,
+  RecordingStopped,
+  RecordingFailed,
+  AsrSucceeded,
+  AsrFailed,
+  ZeroSucceeded,
+  ZeroFailed,
+  MessageSentElapsed,
+  PollTimerWake,
+  PollTimerNoMessage,
+  PollTimerMessage,
+  UnreadConsumed,
+  IdleTimeout,
+};
+
+struct BuddyState {
+  BuddyMode mode = BuddyMode::DeepSleep;
+  bool has_unread_assistant = false;
+  uint8_t poll_backoff_index = 0;
+};
+
+struct BuddyActions {
+  bool wake_screen = false;
+  bool start_recording = false;
+  bool start_recognizing = false;
+  bool send_zero = false;
+  bool show_message_sent = false;
+  bool poll_now = false;
+  bool schedule_poll = false;
+  bool reset_poll_backoff = false;
+  bool stop_polling = false;
+  bool deep_sleep = false;
+  uint32_t next_poll_delay_ms = 0;
+};
+
+struct BuddyTransition {
+  BuddyState state;
+  BuddyActions actions;
 };
 
 class FixedByteQueue {
@@ -104,6 +164,12 @@ std::string preprocessAssistantForDisplay(std::string text);
 std::string decodeChunkedBody(std::string body);
 ZeroMessage parseZeroMessageObject(std::string object);
 ZeroMessagesResult parseZeroMessagesResponse(std::string body);
+std::string buildAssistantQueueManifest(size_t count,
+                                        size_t index,
+                                        bool waiting,
+                                        uint8_t next_delay_index,
+                                        std::string last_seen_message_id);
+AssistantQueueManifest parseAssistantQueueManifest(std::string body, size_t max_count);
 void appendU32(std::vector<uint8_t>& out, uint32_t value);
 std::vector<uint8_t> buildStreamAudioPacket(const uint8_t* data, size_t data_len, bool is_final);
 AsrPayloadResult parseAsrServerPayload(const uint8_t* frame_payload, size_t frame_payload_size);
@@ -118,9 +184,10 @@ uint8_t nextBrightnessLevel(uint8_t current_level, uint8_t level_count);
 uint8_t batteryFillPixels(int32_t level_percent, uint8_t max_pixels);
 void wakePowerWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms);
 void sleepPowerWindow(PowerWindowState* state);
-void startAssistantPollWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms);
-void stopAssistantPollWindow(PowerWindowState* state);
-bool assistantPollWindowActive(const PowerWindowState& state, uint32_t now_ms);
 bool shouldAutoSleepScreen(const PowerWindowState& state, bool busy, uint32_t now_ms);
+BuddyTransition applyBuddyEvent(BuddyState state,
+                                BuddyEvent event,
+                                const uint32_t* poll_backoff_ms,
+                                size_t poll_backoff_count);
 
 }  // namespace zero_buddy

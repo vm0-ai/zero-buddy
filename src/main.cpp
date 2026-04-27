@@ -18,6 +18,7 @@
 #include <mbedtls/error.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -95,6 +96,9 @@ constexpr uint32_t kScreenAwakeWindowMs = 10UL * 1000UL;
 constexpr uint32_t kPostSendAwakeWindowMs = 3UL * 1000UL;
 constexpr uint32_t kAssistantArrivedAwakeWindowMs = 3UL * 1000UL;
 constexpr uint32_t kPollAbortHoldMs = 550;
+constexpr uint8_t kDefaultDisplayRotation = 3;
+constexpr uint8_t kOppositeDisplayRotation = 1;
+constexpr float kLandscapeRotationThresholdG = 0.35f;
 constexpr uint8_t kActiveCpuMhz = 240;
 constexpr uint8_t kPollCpuMhz = 80;
 #if ZERO_BUDDY_SERIAL_LOGS
@@ -193,6 +197,7 @@ zero_buddy::NotificationBlinkState g_assistant_led_blink;
 zero_buddy::PowerWindowState g_power;
 zero_buddy::BuddyState g_buddy_state;
 uint8_t g_current_cpu_mhz = 0;
+uint8_t g_display_rotation = kDefaultDisplayRotation;
 bool g_wifi_power_save_enabled = false;
 unsigned long g_message_sent_since_ms = 0;
 
@@ -258,8 +263,11 @@ unsigned long g_asr_async_finished_ms = 0;
 unsigned long g_test_capture_deadline_ms = 0;
 
 void drawUiFrame();
+void drawAssistantMessageFrame();
 void drawBatteryStatus();
 void refreshBatteryStatus(bool force);
+void applyDisplayRotation();
+bool updateDisplayRotationFromGravity(bool force_redraw);
 void applyRuntimePowerMode();
 void setCpuFrequencyIfNeeded(uint8_t mhz);
 void setWifiPowerSave(bool enable);
@@ -395,6 +403,18 @@ void drawPixelSprite(TDisplay& d, int x, int y, int scale, const char* const* ro
       d.fillRect(x + col * scale, y + row * scale, scale, scale, color);
     }
   }
+}
+
+bool hasMoreAssistantContent(size_t visible_lines) {
+  return g_scroll_line + visible_lines < g_current_message_lines.size() ||
+         g_pending_message_index + 1 < g_pending_assistant_count;
+}
+
+template <typename TDisplay>
+void drawContinueIndicator(TDisplay& d, int x, int y, uint16_t color, uint16_t background) {
+  const int offset = ((millis() / 360) & 1) ? 1 : 0;
+  d.fillRect(x - 12, y - 9, 14, 12, background);
+  d.fillTriangle(x - 9, y - 5 + offset, x - 1, y - 5 + offset, x - 5, y + 1 + offset, color);
 }
 
 void drawNormalAnimation() {
@@ -559,12 +579,13 @@ void drawNormalAnimation() {
       d.print(g_current_message_lines[i]);
       y += kReplyLineHeight;
     }
-    d.setFont(&fonts::Font0);
-    d.setTextColor(TFT_DARKGREY, TFT_WHITE);
-    d.setCursor(kReplyBubbleX + 8, kReplyBubbleY + kReplyBubbleH - 10);
-    d.printf("%u/%u",
-             static_cast<unsigned>(min(g_scroll_line + 1, g_current_message_lines.size())),
-             static_cast<unsigned>(g_current_message_lines.size()));
+    if (hasMoreAssistantContent(kReplyVisibleLines)) {
+      drawContinueIndicator(d,
+                            kReplyBubbleX + kReplyBubbleW - 8,
+                            kReplyBubbleY + kReplyBubbleH - 8,
+                            TFT_BLACK,
+                            TFT_WHITE);
+    }
   } else if (scene == NormalScene::Failed) {
     d.fillRoundRect(24, 18, 52, 52, 8, TFT_WHITE);
     d.drawRoundRect(24, 18, 52, 52, 8, TFT_BLACK);
@@ -754,7 +775,7 @@ String screenBrightnessLabel() {
 }
 
 void applyScreenBrightness() {
-  M5.Display.setBrightness(currentScreenBrightnessValue());
+  M5.Display.setBrightness(g_power.screen_awake ? currentScreenBrightnessValue() : 0);
 }
 
 bool runtimeBusy() {
@@ -897,6 +918,47 @@ void cycleScreenBrightness() {
                 static_cast<unsigned>(currentScreenBrightnessValue()));
 }
 
+void applyDisplayRotation() {
+  M5.Display.setRotation(g_display_rotation);
+}
+
+bool updateDisplayRotationFromGravity(bool force_redraw) {
+  if (!M5.Imu.isEnabled()) {
+    applyDisplayRotation();
+    return false;
+  }
+
+  float ax = 0.0f;
+  float ay = 0.0f;
+  float az = 0.0f;
+  if (!M5.Imu.getAccel(&ax, &ay, &az)) {
+    applyDisplayRotation();
+    return false;
+  }
+
+  if (std::fabs(ax) < kLandscapeRotationThresholdG) {
+    applyDisplayRotation();
+    return false;
+  }
+
+  const uint8_t next_rotation = ax < 0.0f ? kOppositeDisplayRotation : kDefaultDisplayRotation;
+  if (next_rotation == g_display_rotation) {
+    applyDisplayRotation();
+    return false;
+  }
+  g_display_rotation = next_rotation;
+  applyDisplayRotation();
+  ZB_LOG_PRINTF("Display rotation from gravity: %u ax=%.2f ay=%.2f az=%.2f\n",
+                static_cast<unsigned>(g_display_rotation),
+                static_cast<double>(ax),
+                static_cast<double>(ay),
+                static_cast<double>(az));
+  if (force_redraw) {
+    drawUiFrame();
+  }
+  return true;
+}
+
 void wakeScreen(bool user_action, const char* reason) {
   const uint32_t now = millis();
   const bool was_awake = g_power.screen_awake;
@@ -905,9 +967,14 @@ void wakeScreen(bool user_action, const char* reason) {
   applyScreenBrightness();
   if (!was_awake) {
     ZB_LOG_PRINTF("Power wake: %s\n", reason != nullptr ? reason : "unknown");
+    updateDisplayRotationFromGravity(false);
   }
   if (user_action) {
     clearAssistantLedBlinkForUserAction();
+  }
+  if (was_awake && user_action && g_test_mode == TestMode::Normal &&
+      !currentPendingAssistantMessage().isEmpty()) {
+    return;
   }
   drawUiFrame();
 }
@@ -3441,12 +3508,44 @@ void drawBatteryStatus() {
   }
 }
 
+void drawAssistantMessageFrame() {
+  if (!g_power.screen_awake) {
+    return;
+  }
+  auto& display = M5.Display;
+  applyDisplayRotation();
+  display.setTextWrap(false);
+  display.fillRect(kUiOffsetX + kBodyLeft - 1,
+                   kBodyTop - 1,
+                   kBodyWidth + 2,
+                   kBodyHeight + 2,
+                   TFT_BLACK);
+  display.drawRoundRect(kUiOffsetX + kBodyLeft, kBodyTop, kBodyWidth, kBodyHeight, 6, TFT_DARKCYAN);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.setFont(&fonts::efontCN_14);
+  const size_t start = min(g_scroll_line, g_current_message_lines.size());
+  const size_t end = min(start + static_cast<size_t>(kBodyVisibleLines), g_current_message_lines.size());
+  int y = kBodyTop + 8;
+  for (size_t i = start; i < end; ++i) {
+    display.setCursor(kUiOffsetX + kBodyLeft + 8, y);
+    display.print(g_current_message_lines[i]);
+    y += kBodyLineHeight;
+  }
+  if (hasMoreAssistantContent(kBodyVisibleLines)) {
+    drawContinueIndicator(display,
+                          kUiOffsetX + kBodyLeft + kBodyWidth - 10,
+                          kBodyTop + kBodyHeight - 9,
+                          TFT_CYAN,
+                          TFT_BLACK);
+  }
+}
+
 void drawUiFrame() {
   if (!g_power.screen_awake) {
     return;
   }
   auto& display = M5.Display;
-  display.setRotation(3);
+  applyDisplayRotation();
   display.fillScreen(TFT_BLACK);
   const bool normal_mode = g_test_mode == TestMode::Normal;
   display.setTextWrap(false);
@@ -3466,23 +3565,7 @@ void drawUiFrame() {
 
   const String pending = currentPendingAssistantMessage();
   if (normal_mode && !pending.isEmpty()) {
-    display.drawRoundRect(kUiOffsetX + kBodyLeft, kBodyTop, kBodyWidth, kBodyHeight, 6, TFT_DARKCYAN);
-    display.setTextColor(TFT_WHITE, TFT_BLACK);
-    display.setFont(&fonts::efontCN_14);
-    const size_t start = min(g_scroll_line, g_current_message_lines.size());
-    const size_t end = min(start + static_cast<size_t>(kBodyVisibleLines), g_current_message_lines.size());
-    int y = kBodyTop + 8;
-    for (size_t i = start; i < end; ++i) {
-      display.setCursor(kUiOffsetX + kBodyLeft + 8, y);
-      display.print(g_current_message_lines[i]);
-      y += kBodyLineHeight;
-    }
-    display.setFont(&fonts::Font0);
-    display.setTextColor(TFT_CYAN, TFT_BLACK);
-    display.setCursor(kUiOffsetX + kScreenWidth - 48, kScreenHeight - 11);
-    display.printf("%u/%u",
-                   static_cast<unsigned>(min(g_scroll_line + 1, g_current_message_lines.size())),
-                   static_cast<unsigned>(g_current_message_lines.size()));
+    drawAssistantMessageFrame();
   } else {
     display.setTextColor(TFT_YELLOW, TFT_BLACK);
     display.setFont(&fonts::Font2);
@@ -4481,8 +4564,11 @@ void setup() {
   cfg.clear_display = true;
   M5.begin(cfg);
   setCpuFrequencyIfNeeded(kActiveCpuMhz);
-  g_power.screen_awake = true;
-  zero_buddy::wakePowerWindow(&g_power, millis(), kScreenAwakeWindowMs);
+  if (woke_from_timer_deep_sleep) {
+    zero_buddy::sleepPowerWindow(&g_power);
+  } else {
+    zero_buddy::wakePowerWindow(&g_power, millis(), kScreenAwakeWindowMs);
+  }
   if (g_rtc_battery_known) {
     g_battery_ui.known = true;
     g_battery_ui.charging = g_rtc_battery_charging;
@@ -4490,7 +4576,7 @@ void setup() {
     g_battery_ui.last_read_ms = 1;
   }
   applyScreenBrightness();
-  M5.Display.setRotation(3);
+  updateDisplayRotationFromGravity(false);
   pinMode(static_cast<int>(kBtnAWakePin), INPUT);
   pinMode(static_cast<int>(kBtnBWakePin), INPUT);
   releaseStatusLedDeepSleepHold();
@@ -4715,8 +4801,13 @@ void loop() {
   if (g_test_mode == TestMode::Normal && btn_a_released && !g_recording && !g_uploading &&
       !currentPendingAssistantMessage().isEmpty()) {
     if (!g_suppress_wake_short_action) {
+      const bool had_pending_message = !currentPendingAssistantMessage().isEmpty();
       handleAssistantAdvance(false);
-      drawUiFrame();
+      if (had_pending_message && !currentPendingAssistantMessage().isEmpty()) {
+        drawAssistantMessageFrame();
+      } else {
+        drawUiFrame();
+      }
     }
   }
 

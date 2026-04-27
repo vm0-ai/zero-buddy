@@ -18,6 +18,7 @@
 #include <mbedtls/error.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
+#include <cstring>
 #include <vector>
 
 #include "base64.h"
@@ -90,8 +91,9 @@ constexpr uint32_t kAssistantLedBlinkPulseMs = 120;
 constexpr uint32_t kScreenAwakeWindowMs = 10UL * 1000UL;
 constexpr uint32_t kAssistantPollWindowMs = 10UL * 60UL * 1000UL;
 constexpr uint8_t kActiveCpuMhz = 240;
-constexpr uint8_t kIdleCpuMhz = 80;
+constexpr uint8_t kIdleCpuMhz = 40;
 constexpr uint16_t kAwakeIdleDelayMs = 10;
+constexpr bool kDeepSleepOnIdle = true;
 
 constexpr char kAsrWsHost[] = "openspeech.bytedance.com";
 constexpr uint16_t kAsrWsPort = 443;
@@ -102,6 +104,20 @@ constexpr char kZeroHost[] = "api.vm0.ai";
 constexpr uint16_t kZeroPort = 443;
 constexpr unsigned long kZeroPollIntervalMs = 10000;
 constexpr unsigned long kZeroRequestDeadlineMs = 10000;
+constexpr uint32_t kZeroPollBackoffMs[] = {
+    15UL * 1000UL,
+    30UL * 1000UL,
+    60UL * 1000UL,
+    2UL * 60UL * 1000UL,
+    4UL * 60UL * 1000UL,
+    8UL * 60UL * 1000UL,
+    10UL * 60UL * 1000UL,
+};
+constexpr uint8_t kZeroPollBackoffCount =
+    sizeof(kZeroPollBackoffMs) / sizeof(kZeroPollBackoffMs[0]);
+constexpr uint8_t kZeroPollDeepSleepStartIndex = 2;
+constexpr uint32_t kPollRtcMagic = 0x5A0B0DD1UL;
+constexpr size_t kRtcMessageIdBytes = 160;
 constexpr bool kBootZeroSelfTest = false;
 constexpr char kZeroResponsePath[] = "/zero_resp.json";
 constexpr char kAsrRecordPcmPath[] = "/asr_rec.pcm";
@@ -163,6 +179,15 @@ zero_buddy::PowerWindowState g_power;
 uint8_t g_current_cpu_mhz = 0;
 bool g_wifi_power_save_enabled = false;
 
+struct AssistantPollRtcState {
+  uint32_t magic = 0;
+  bool active = false;
+  uint8_t next_delay_index = 0;
+  char last_seen_message_id[kRtcMessageIdBytes] = {0};
+};
+
+RTC_DATA_ATTR AssistantPollRtcState g_poll_rtc;
+
 struct BatteryUiState {
   int32_t level_percent = -1;
   bool charging = false;
@@ -212,6 +237,12 @@ void applyRuntimePowerMode();
 void setCpuFrequencyIfNeeded(uint8_t mhz);
 void setWifiPowerSave(bool enable);
 bool pollZeroAssistantMessages(bool baseline_only, String* error_out);
+void pollZeroAssistantMessagesAndSchedule();
+void scheduleNextAssistantPoll();
+void prepareAssistantPollTimerSleep();
+void restoreAssistantPollFromRtc();
+void persistAssistantPollLastSeen();
+void cancelAssistantPolling(const char* reason);
 void closeStreamAsrSession();
 void clearRecordBacklog();
 void removeFlashFileIfExists(const char* path);
@@ -219,6 +250,7 @@ void applyScreenBrightness();
 void cycleScreenBrightness();
 void wakeScreen(bool user_action, const char* reason);
 void enterScreenSleep(const char* reason);
+void enterIdleDeepSleep(const char* reason);
 void runLightSleepIfIdle();
 void beginAssistantPollingWindow();
 void stopAssistantPollingWindow();
@@ -234,6 +266,7 @@ void waitForAsrConnectTask(uint32_t timeout_ms);
 void resetAsrConnectStateIfDone();
 bool writeRecordFlash(const uint8_t* data, size_t data_len);
 void closeRecordFlash();
+void connectWifi();
 
 enum class NormalScene : uint8_t {
   WifiConnecting,
@@ -737,6 +770,11 @@ void wakeScreen(bool user_action, const char* reason) {
   drawUiFrame();
 }
 
+void keepScreenAwakeForWork() {
+  zero_buddy::wakePowerWindow(&g_power, millis(), kScreenAwakeWindowMs);
+  applyScreenBrightness();
+}
+
 void enterScreenSleep(const char* reason) {
   if (!g_power.screen_awake || g_recording || g_uploading) {
     return;
@@ -751,20 +789,115 @@ void enterScreenSleep(const char* reason) {
 }
 
 void beginAssistantPollingWindow() {
-  const uint32_t now = millis();
   g_waiting_for_assistant = true;
-  g_last_zero_poll_ms = now;
-  zero_buddy::startAssistantPollWindow(&g_power, now, kAssistantPollWindowMs);
+  g_poll_rtc.magic = kPollRtcMagic;
+  g_poll_rtc.active = true;
+  g_poll_rtc.next_delay_index = 0;
+  scheduleNextAssistantPoll();
 }
 
 void stopAssistantPollingWindow() {
-  g_waiting_for_assistant = false;
-  zero_buddy::stopAssistantPollWindow(&g_power);
-  applyRuntimePowerMode();
+  cancelAssistantPolling("stop");
 }
 
 bool assistantPollingWindowActive() {
   return zero_buddy::assistantPollWindowActive(g_power, millis());
+}
+
+uint32_t zeroPollBackoffMs(uint8_t index) {
+  if (index >= kZeroPollBackoffCount) {
+    return kZeroPollBackoffMs[kZeroPollBackoffCount - 1];
+  }
+  return kZeroPollBackoffMs[index];
+}
+
+bool assistantPollNextWaitUsesDeepSleep() {
+  return g_waiting_for_assistant &&
+         g_poll_rtc.magic == kPollRtcMagic &&
+         g_poll_rtc.active &&
+         g_poll_rtc.next_delay_index >= kZeroPollDeepSleepStartIndex;
+}
+
+void persistAssistantPollLastSeen() {
+  g_poll_rtc.magic = kPollRtcMagic;
+  const String id = g_zero_last_seen_message_id.substring(0, kRtcMessageIdBytes - 1);
+  std::memset(g_poll_rtc.last_seen_message_id, 0, sizeof(g_poll_rtc.last_seen_message_id));
+  std::memcpy(g_poll_rtc.last_seen_message_id, id.c_str(), id.length());
+}
+
+void restoreAssistantPollFromRtc() {
+  if (g_poll_rtc.magic != kPollRtcMagic || !g_poll_rtc.active) {
+    return;
+  }
+  g_waiting_for_assistant = true;
+  g_zero_last_seen_message_id = String(g_poll_rtc.last_seen_message_id);
+  g_status = "waiting assistant";
+  g_result = "polling zero";
+}
+
+void clearAssistantPollRtc() {
+  g_poll_rtc.magic = kPollRtcMagic;
+  g_poll_rtc.active = false;
+  g_poll_rtc.next_delay_index = 0;
+  g_poll_rtc.last_seen_message_id[0] = '\0';
+}
+
+void scheduleNextAssistantPoll() {
+  if (!g_waiting_for_assistant || !currentPendingAssistantMessage().isEmpty()) {
+    return;
+  }
+  persistAssistantPollLastSeen();
+  const uint32_t wait_ms = zeroPollBackoffMs(g_poll_rtc.next_delay_index);
+  g_last_zero_poll_ms = millis();
+  zero_buddy::startAssistantPollWindow(&g_power, millis(), kAssistantPollWindowMs);
+  g_result = "poll in " + String(wait_ms / 1000) + "s";
+}
+
+void cancelAssistantPolling(const char* reason) {
+  if (g_waiting_for_assistant) {
+    ZB_LOG_PRINTF("Assistant poll cancelled: %s\n", reason != nullptr ? reason : "unknown");
+  }
+  g_waiting_for_assistant = false;
+  zero_buddy::stopAssistantPollWindow(&g_power);
+  clearAssistantPollRtc();
+  applyRuntimePowerMode();
+}
+
+void prepareAssistantPollTimerSleep() {
+  persistAssistantPollLastSeen();
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(
+      zeroPollBackoffMs(g_poll_rtc.next_delay_index)) * 1000ULL);
+}
+
+bool buttonsReleasedForDeepSleep() {
+  return digitalRead(static_cast<int>(kBtnAWakePin)) == HIGH &&
+         digitalRead(static_cast<int>(kBtnBWakePin)) == HIGH;
+}
+
+void enterIdleDeepSleep(const char* reason) {
+  if (!kDeepSleepOnIdle || g_recording || g_uploading || runtimeBusy() ||
+      !buttonsReleasedForDeepSleep()) {
+    return;
+  }
+  const bool assistant_timer_sleep = assistantPollNextWaitUsesDeepSleep();
+  if (g_waiting_for_assistant && !assistant_timer_sleep) {
+    return;
+  }
+  ZB_LOG_PRINTF("Power deep sleep: %s\n", reason != nullptr ? reason : "idle");
+  ledcWriteTone(0, 0);
+  g_buzzer_stop_ms = 0;
+  digitalWrite(kLedPin, HIGH);
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setBrightness(0);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_sleep_enable_ext0_wakeup(kBtnAWakePin, 0);
+  if (assistant_timer_sleep) {
+    prepareAssistantPollTimerSleep();
+  }
+  delay(30);
+  esp_deep_sleep_start();
 }
 
 void runLightSleepIfIdle() {
@@ -2637,6 +2770,46 @@ bool pollZeroAssistantMessages(bool baseline_only, String* error_out) {
   return true;
 }
 
+void pollZeroAssistantMessagesAndSchedule() {
+  if (!g_waiting_for_assistant || !currentPendingAssistantMessage().isEmpty()) {
+    return;
+  }
+  if (!g_wifi_connected) {
+    g_status = "wifi connecting";
+    g_result = "polling zero";
+    drawUiFrame();
+    connectWifi();
+  }
+
+  const size_t before_count = g_pending_assistant_count;
+  bool poll_ok = false;
+  String poll_error;
+  if (g_wifi_connected) {
+    g_status = "polling zero";
+    g_result = "checking";
+    drawUiFrame();
+    poll_ok = pollZeroAssistantMessages(false, &poll_error);
+    if (!poll_ok) {
+      ZB_LOG_PRINTF("ZERO poll failed: %s\n", poll_error.c_str());
+    }
+  }
+
+  if (poll_ok && g_pending_assistant_count > before_count) {
+    g_poll_rtc.active = false;
+    return;
+  }
+
+  if (g_poll_rtc.next_delay_index < kZeroPollBackoffCount - 1) {
+    ++g_poll_rtc.next_delay_index;
+  }
+  scheduleNextAssistantPoll();
+  drawUiFrame();
+  if (assistantPollNextWaitUsesDeepSleep()) {
+    enterScreenSleep("poll wait");
+    enterIdleDeepSleep("poll wait");
+  }
+}
+
 void initMic() {
   M5.Speaker.end();
   auto mic_cfg = M5.Mic.config();
@@ -2782,18 +2955,6 @@ void drawUiFrame() {
     display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
     display.setCursor(kUiOffsetX + 58, 72);
     display.print("please wait");
-    display.setTextWrap(true);
-    return;
-  }
-
-  if (normal_mode && !g_wifi_connected) {
-    display.setTextColor(TFT_RED, TFT_BLACK);
-    display.setFont(&fonts::efontCN_14);
-    display.setCursor(kUiOffsetX + 76, 50);
-    display.print("No Wi-Fi");
-    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    display.setCursor(kUiOffsetX + 44, 72);
-    display.print("retrying automatically");
     display.setTextWrap(true);
     return;
   }
@@ -3633,6 +3794,21 @@ void finishNormalConversation() {
     return;
   }
 
+  if (!g_wifi_connected) {
+    g_status = "wifi connecting";
+    g_result = "after recording";
+    drawUiFrame();
+    connectWifi();
+    if (!g_wifi_connected) {
+      g_uploading = false;
+      g_status = "wifi failed";
+      g_result = "cannot send";
+      releaseAudioResources();
+      drawUiFrame();
+      return;
+    }
+  }
+
   String error;
   String text;
   const bool flash_complete =
@@ -3661,8 +3837,8 @@ void finishNormalConversation() {
   logAsrCaptureMetrics("NORMAL ASR FLASH", connect_ms, assessment);
 
   releaseAudioResources();
-  g_uploading = false;
   if (!ok) {
+    g_uploading = false;
     ZB_LOG_PRINTF("ASR finish failed: %s\n", error.c_str());
     stopAssistantPollingWindow();
     g_status = "failed";
@@ -3673,10 +3849,13 @@ void finishNormalConversation() {
 
   String sent_message_id;
   String zero_error;
+  keepScreenAwakeForWork();
   g_status = "sending zero";
   g_result = "posting...";
   drawUiFrame();
   const bool zero_ok = postTextToZero(text, &sent_message_id, &zero_error);
+  keepScreenAwakeForWork();
+  g_uploading = false;
   if (zero_ok) {
     if (!sent_message_id.isEmpty()) {
       g_zero_last_seen_message_id = sent_message_id;
@@ -3779,6 +3958,9 @@ void startCurrentTest() {
 }  // namespace
 
 void setup() {
+  const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
+  const bool woke_from_button_deep_sleep = wake_cause == ESP_SLEEP_WAKEUP_EXT0;
+  const bool woke_from_timer_deep_sleep = wake_cause == ESP_SLEEP_WAKEUP_TIMER;
   auto cfg = M5.config();
   cfg.clear_display = true;
   M5.begin(cfg);
@@ -3801,21 +3983,37 @@ void setup() {
   ZB_LOG_PRINTLN("M5StickC Plus Doubao ASR demo booted");
   g_flash_store_ready = LittleFS.begin(true);
   ZB_LOG_PRINTF("LittleFS: %s\n", g_flash_store_ready ? "ok" : "failed");
-  clearAssistantMessages();
+  if (!woke_from_timer_deep_sleep) {
+    clearAssistantMessages();
+  }
   removeFlashFileIfExists(kZeroResponsePath);
   removeFlashFileIfExists(kAsrRecordPcmPath);
 
   randomSeed(esp_random());
-  connectWifi();
-  g_status = g_wifi_connected ? "ready" : "wifi failed";
+  WiFi.mode(WIFI_OFF);
+  g_wifi_connected = false;
+  g_wifi_connecting = false;
+  g_ip_address = "offline";
+  g_status = "ready";
   g_test_mode = TestMode::Normal;
   g_result = "hold BtnA to record";
-  if (g_wifi_connected) {
-    String poll_error;
-    pollZeroAssistantMessages(true, &poll_error);
+  if (woke_from_timer_deep_sleep) {
+    restoreAssistantPollFromRtc();
+    pollZeroAssistantMessagesAndSchedule();
+  } else if (woke_from_button_deep_sleep && g_poll_rtc.magic == kPollRtcMagic && g_poll_rtc.active) {
+    cancelAssistantPolling("button wake");
   }
   drawUiFrame();
-  enterScreenSleep("boot");
+  if (woke_from_timer_deep_sleep && g_waiting_for_assistant &&
+      currentPendingAssistantMessage().isEmpty()) {
+    enterScreenSleep("poll wait");
+    enterIdleDeepSleep("poll wait");
+  } else if (!woke_from_button_deep_sleep && !woke_from_timer_deep_sleep) {
+    enterScreenSleep("boot");
+    enterIdleDeepSleep("boot");
+  } else if (woke_from_button_deep_sleep) {
+    g_suppress_wake_short_action = true;
+  }
   applyRuntimePowerMode();
 }
 
@@ -3849,34 +4047,10 @@ void loop() {
                   static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
   }
 
-  static unsigned long last_wifi_retry_ms = 0;
-  if (g_test_mode == TestMode::Normal && !g_wifi_connected && !g_wifi_connecting &&
-      millis() - last_wifi_retry_ms >= 8000) {
-    last_wifi_retry_ms = millis();
-    g_status = "wifi connecting";
-    drawUiFrame();
-    connectWifi();
-    drawUiFrame();
-  }
-
-  if (g_test_mode == TestMode::Normal && g_waiting_for_assistant &&
-      !assistantPollingWindowActive() && currentPendingAssistantMessage().isEmpty() &&
-      !g_recording && !g_uploading) {
-    stopAssistantPollingWindow();
-    g_status = "ready";
-    g_result = "hold BtnA to record";
-    drawUiFrame();
-  }
-
-  if (g_test_mode == TestMode::Normal && g_wifi_connected && g_waiting_for_assistant && !g_recording &&
+  if (g_test_mode == TestMode::Normal && g_waiting_for_assistant && !g_recording &&
       !g_uploading && currentPendingAssistantMessage().isEmpty() &&
-      assistantPollingWindowActive() &&
-      millis() - g_last_zero_poll_ms >= kZeroPollIntervalMs) {
-    g_last_zero_poll_ms = millis();
-    String poll_error;
-    if (!pollZeroAssistantMessages(false, &poll_error)) {
-      ZB_LOG_PRINTF("ZERO poll failed: %s\n", poll_error.c_str());
-    }
+      millis() - g_last_zero_poll_ms >= zeroPollBackoffMs(g_poll_rtc.next_delay_index)) {
+    pollZeroAssistantMessagesAndSchedule();
   }
 
   if (g_test_mode == TestMode::Normal) {
@@ -4041,6 +4215,7 @@ void loop() {
   serviceAssistantLedBlink();
   if (zero_buddy::shouldAutoSleepScreen(g_power, g_recording || g_uploading, millis())) {
     enterScreenSleep("idle timeout");
+    enterIdleDeepSleep("idle timeout");
   }
   applyRuntimePowerMode();
   if (g_power.screen_awake && !runtimeBusy()) {

@@ -87,7 +87,7 @@ constexpr unsigned long kMicTestDurationMs = 1500;
 constexpr unsigned long kAsrTestDurationMs = 2000;
 constexpr uint32_t kAssistantLedBlinkIntervalMs = 3000;
 constexpr uint32_t kAssistantLedBlinkPulseMs = 120;
-constexpr uint32_t kScreenAwakeWindowMs = 30UL * 1000UL;
+constexpr uint32_t kScreenAwakeWindowMs = 10UL * 1000UL;
 constexpr uint32_t kAssistantPollWindowMs = 10UL * 60UL * 1000UL;
 constexpr uint8_t kActiveCpuMhz = 240;
 constexpr uint8_t kIdleCpuMhz = 80;
@@ -726,6 +726,7 @@ void wakeScreen(bool user_action, const char* reason) {
   if (g_waiting_for_assistant) {
     zero_buddy::startAssistantPollWindow(&g_power, now, kAssistantPollWindowMs);
   }
+  applyRuntimePowerMode();
   applyScreenBrightness();
   if (!was_awake) {
     ZB_LOG_PRINTF("Power wake: %s\n", reason != nullptr ? reason : "unknown");
@@ -4041,7 +4042,6 @@ void loop() {
   if (zero_buddy::shouldAutoSleepScreen(g_power, g_recording || g_uploading, millis())) {
     enterScreenSleep("idle timeout");
   }
-  runLightSleepIfIdle();
   applyRuntimePowerMode();
   if (g_power.screen_awake && !runtimeBusy()) {
     delay(kAwakeIdleDelayMs);

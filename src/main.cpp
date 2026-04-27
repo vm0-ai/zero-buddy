@@ -8,6 +8,7 @@
 #include <driver/gpio.h>
 #include <esp_heap_caps.h>
 #include <esp_sleep.h>
+#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <lwip/sockets.h>
@@ -86,8 +87,11 @@ constexpr unsigned long kMicTestDurationMs = 1500;
 constexpr unsigned long kAsrTestDurationMs = 2000;
 constexpr uint32_t kAssistantLedBlinkIntervalMs = 3000;
 constexpr uint32_t kAssistantLedBlinkPulseMs = 120;
-constexpr uint32_t kAwakeWindowMs = 10UL * 60UL * 1000UL;
+constexpr uint32_t kScreenAwakeWindowMs = 30UL * 1000UL;
 constexpr uint32_t kAssistantPollWindowMs = 10UL * 60UL * 1000UL;
+constexpr uint8_t kActiveCpuMhz = 240;
+constexpr uint8_t kIdleCpuMhz = 80;
+constexpr uint16_t kAwakeIdleDelayMs = 10;
 
 constexpr char kAsrWsHost[] = "openspeech.bytedance.com";
 constexpr uint16_t kAsrWsPort = 443;
@@ -156,6 +160,8 @@ std::vector<String> g_current_message_lines;
 bool g_flash_store_ready = false;
 zero_buddy::NotificationBlinkState g_assistant_led_blink;
 zero_buddy::PowerWindowState g_power;
+uint8_t g_current_cpu_mhz = 0;
+bool g_wifi_power_save_enabled = false;
 
 struct BatteryUiState {
   int32_t level_percent = -1;
@@ -202,6 +208,9 @@ unsigned long g_test_capture_deadline_ms = 0;
 void drawUiFrame();
 void drawBatteryStatus();
 void refreshBatteryStatus(bool force);
+void applyRuntimePowerMode();
+void setCpuFrequencyIfNeeded(uint8_t mhz);
+void setWifiPowerSave(bool enable);
 bool pollZeroAssistantMessages(bool baseline_only, String* error_out);
 void closeStreamAsrSession();
 void clearRecordBacklog();
@@ -601,6 +610,7 @@ void releaseAudioResources() {
     M5.delay(1);
   }
   M5.Mic.end();
+  applyRuntimePowerMode();
 }
 
 bool writeRecordFlash(const uint8_t* data, size_t data_len) {
@@ -664,6 +674,40 @@ void applyScreenBrightness() {
   M5.Display.setBrightness(currentScreenBrightnessValue());
 }
 
+bool runtimeBusy() {
+  return g_recording || g_uploading || g_wifi_connecting || g_network_task != NetworkTask::None;
+}
+
+void setCpuFrequencyIfNeeded(uint8_t mhz) {
+  if (g_current_cpu_mhz == mhz) {
+    return;
+  }
+  if (setCpuFrequencyMhz(mhz)) {
+    g_current_cpu_mhz = mhz;
+    ZB_LOG_PRINTF("CPU frequency: %u MHz\n", static_cast<unsigned>(mhz));
+  }
+}
+
+void setWifiPowerSave(bool enable) {
+  if (WiFi.getMode() == WIFI_OFF || g_wifi_power_save_enabled == enable) {
+    return;
+  }
+  WiFi.setSleep(enable);
+  const esp_err_t err = esp_wifi_set_ps(enable ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
+  if (err == ESP_OK) {
+    g_wifi_power_save_enabled = enable;
+    ZB_LOG_PRINTF("WiFi power save: %s\n", enable ? "on" : "off");
+  } else {
+    ZB_LOG_PRINTF("WiFi power save failed: %d\n", static_cast<int>(err));
+  }
+}
+
+void applyRuntimePowerMode() {
+  const bool busy = runtimeBusy();
+  setWifiPowerSave(!busy);
+  setCpuFrequencyIfNeeded(busy ? kActiveCpuMhz : kIdleCpuMhz);
+}
+
 void cycleScreenBrightness() {
   g_screen_brightness_level = zero_buddy::nextBrightnessLevel(g_screen_brightness_level,
                                                               kScreenBrightnessLevelCount);
@@ -678,7 +722,7 @@ void cycleScreenBrightness() {
 void wakeScreen(bool user_action, const char* reason) {
   const uint32_t now = millis();
   const bool was_awake = g_power.screen_awake;
-  zero_buddy::wakePowerWindow(&g_power, now, kAwakeWindowMs);
+  zero_buddy::wakePowerWindow(&g_power, now, kScreenAwakeWindowMs);
   if (g_waiting_for_assistant) {
     zero_buddy::startAssistantPollWindow(&g_power, now, kAssistantPollWindowMs);
   }
@@ -702,6 +746,7 @@ void enterScreenSleep(const char* reason) {
   g_buzzer_stop_ms = 0;
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setBrightness(0);
+  applyRuntimePowerMode();
 }
 
 void beginAssistantPollingWindow() {
@@ -714,6 +759,7 @@ void beginAssistantPollingWindow() {
 void stopAssistantPollingWindow() {
   g_waiting_for_assistant = false;
   zero_buddy::stopAssistantPollWindow(&g_power);
+  applyRuntimePowerMode();
 }
 
 bool assistantPollingWindowActive() {
@@ -1242,6 +1288,8 @@ bool acquireNetworkTask(NetworkTask task, String* error_out) {
     return false;
   }
   g_network_task = task;
+  setCpuFrequencyIfNeeded(kActiveCpuMhz);
+  setWifiPowerSave(false);
   ZB_LOG_PRINTF("NETWORK acquire %s\n", networkTaskLabel(task));
   return true;
 }
@@ -1250,6 +1298,7 @@ void releaseNetworkTask(NetworkTask task) {
   if (g_network_task == task) {
     ZB_LOG_PRINTF("NETWORK release %s\n", networkTaskLabel(task));
     g_network_task = NetworkTask::None;
+    applyRuntimePowerMode();
   }
 }
 
@@ -2610,6 +2659,8 @@ void initMic() {
 void connectWifi() {
   logHeap("wifi connect begin");
   WiFi.mode(WIFI_STA);
+  setCpuFrequencyIfNeeded(kActiveCpuMhz);
+  setWifiPowerSave(false);
   g_wifi_connected = false;
   g_wifi_connecting = true;
   g_ip_address = "offline";
@@ -2628,12 +2679,14 @@ void connectWifi() {
       g_ip_address = WiFi.localIP().toString();
       ZB_LOG_PRINTF("WiFi connected: %s ip=%s\n", cred.ssid, g_ip_address.c_str());
       logHeap("wifi connected");
+      applyRuntimePowerMode();
       return;
     }
     logHeap("wifi attempt failed");
   }
   g_wifi_connecting = false;
   logHeap("wifi failed");
+  applyRuntimePowerMode();
 }
 
 void refreshBatteryStatus(bool force) {
@@ -3361,8 +3414,14 @@ bool transcribeFlashRecording(String* text_out, String* error_out) {
 }
 
 void startRecording() {
+  setCpuFrequencyIfNeeded(kActiveCpuMhz);
+  setWifiPowerSave(false);
   closeStreamAsrSession();
+  setCpuFrequencyIfNeeded(kActiveCpuMhz);
+  setWifiPowerSave(false);
   stopAssistantPollingWindow();
+  setCpuFrequencyIfNeeded(kActiveCpuMhz);
+  setWifiPowerSave(false);
   beepListenStart();
   clearRecordBacklog();
   g_recorded_bytes = 0;
@@ -3722,8 +3781,9 @@ void setup() {
   auto cfg = M5.config();
   cfg.clear_display = true;
   M5.begin(cfg);
+  setCpuFrequencyIfNeeded(kActiveCpuMhz);
   g_power.screen_awake = true;
-  zero_buddy::wakePowerWindow(&g_power, millis(), kAwakeWindowMs);
+  zero_buddy::wakePowerWindow(&g_power, millis(), kScreenAwakeWindowMs);
   applyScreenBrightness();
   M5.Display.setRotation(3);
   pinMode(static_cast<int>(kBtnAWakePin), INPUT);
@@ -3755,6 +3815,7 @@ void setup() {
   }
   drawUiFrame();
   enterScreenSleep("boot");
+  applyRuntimePowerMode();
 }
 
 void loop() {
@@ -3981,4 +4042,8 @@ void loop() {
     enterScreenSleep("idle timeout");
   }
   runLightSleepIfIdle();
+  applyRuntimePowerMode();
+  if (g_power.screen_awake && !runtimeBusy()) {
+    delay(kAwakeIdleDelayMs);
+  }
 }

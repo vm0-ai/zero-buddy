@@ -57,6 +57,7 @@
 - The top-left header shows the current message position, such as `1/1`.
 - The top-right header shows the current 4-bar battery icon.
 - The message body is clipped to the viewport and rendered from the persisted `scrollTop`.
+- Full-screen render work is skipped when `GlobalState.lastRenderScreenState` already matches the same read screen.
 - The 80x45 Zero dot-matrix avatar is rendered in:
   - `Recording` status screens.
   - The `Read` empty-message screen.

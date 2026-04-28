@@ -12,6 +12,7 @@ The methods here are intentionally small and deterministic. They do not touch Wi
   - Sets `checkDelayMs` to 30 seconds.
   - Clears `lastMessageId`.
   - Sets `hasAssistantMessage = false`.
+  - Sets `lastRenderScreenState = None`.
 
 - `setMode(state, mode)`
   - Updates `currentMode`.
@@ -55,6 +56,19 @@ The methods here are intentionally small and deterministic. They do not touch Wi
 - `setHasAssistantMessage(state, hasAssistantMessage)`
   - Sets the boolean assistant message presence flag.
   - Firmware should call this from `append_assistant_message` and `clear_assistant_message`.
+
+## Render Screen State
+
+- `shouldRenderScreen(state, next)`
+  - Returns `false` when `next` matches `lastRenderScreenState`.
+  - Stores `next` and returns `true` when the full-screen render should proceed.
+
+- `setLastRenderScreenState(state, next)`
+  - Writes the last full-screen render key directly.
+
+- `clearLastRenderScreenState(state)`
+  - Resets the key to `None`.
+  - Firmware should call this when the screen is turned off.
 
 ## Recording Commit And Abort
 

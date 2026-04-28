@@ -80,6 +80,7 @@ struct GlobalState {
   char lastMessageId[160];
 
   bool hasAssistantMessage;
+  RenderScreenState lastRenderScreenState;
 };
 ```
 
@@ -104,6 +105,23 @@ struct GlobalState {
   - It only records whether LittleFS currently has at least one assistant message.
   - It is maintained by `append_assistant_message` and `clear_assistant_message`, not directly by mode logic.
 
+- `lastRenderScreenState`
+  - Tracks the last full-screen render key so mode transitions can avoid drawing the same screen again.
+  - Cleared when the screen is turned off.
+  - Local overlays, such as the top-right battery icon, are not part of this key.
+  - Current full-screen render kinds:
+    - `Boot`
+    - `ReadEmpty`
+    - `ReadAssistantMessage`
+    - `RecordingPrompt`
+    - `RecordingActive`
+    - `RecordingWifi`
+    - `RecordingTranscribing`
+    - `RecordingSending`
+    - `RecordingSent`
+    - `RecordingAborted`
+    - `RecordingFailed`
+
 Mode-local state, such as audio buffers, network request handles, temporary file handles, and abort flags, should stay inside the owning mode instead of being added to `GlobalState`.
 
 ## Persistent Storage
@@ -114,6 +132,7 @@ Some global state is also persisted because the device spends most of its time i
   - `checkDelayMs`
   - `lastMessageId`
   - `hasAssistantMessage`
+  - `lastRenderScreenState`
   - validation magic/version
 
 - LittleFS

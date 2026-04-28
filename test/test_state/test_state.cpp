@@ -9,6 +9,8 @@ namespace {
 using zero_buddy::state::AssistantCheckResult;
 using zero_buddy::state::Event;
 using zero_buddy::state::Mode;
+using zero_buddy::state::RenderScreenKind;
+using zero_buddy::state::RenderScreenState;
 
 void assertMode(Mode expected, Mode actual) {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(expected), static_cast<uint8_t>(actual));
@@ -21,6 +23,8 @@ void test_default_global_state() {
   TEST_ASSERT_FALSE(zero_buddy::state::hasLastMessageId(state));
   TEST_ASSERT_EQUAL_STRING("", zero_buddy::state::copyLastMessageId(state).c_str());
   TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RenderScreenKind::None),
+                          static_cast<uint8_t>(state.lastRenderScreenState.kind));
 }
 
 void test_message_cursor_copy_and_truncation() {
@@ -66,6 +70,30 @@ void test_assistant_message_flag_helper() {
   TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
   zero_buddy::state::setHasAssistantMessage(&state, false);
   TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
+}
+
+void test_render_screen_state_helper() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+  RenderScreenState empty;
+  empty.kind = RenderScreenKind::ReadEmpty;
+
+  TEST_ASSERT_TRUE(zero_buddy::state::shouldRenderScreen(&state, empty));
+  TEST_ASSERT_FALSE(zero_buddy::state::shouldRenderScreen(&state, empty));
+
+  RenderScreenState message;
+  message.kind = RenderScreenKind::ReadAssistantMessage;
+  message.value1 = 1;
+  message.value2 = 2;
+  message.value3 = 40;
+  message.value4 = 1234;
+  TEST_ASSERT_FALSE(zero_buddy::state::sameRenderScreenState(empty, message));
+  TEST_ASSERT_TRUE(zero_buddy::state::shouldRenderScreen(&state, message));
+  TEST_ASSERT_FALSE(zero_buddy::state::shouldRenderScreen(&state, message));
+
+  zero_buddy::state::clearLastRenderScreenState(&state);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RenderScreenKind::None),
+                          static_cast<uint8_t>(state.lastRenderScreenState.kind));
+  TEST_ASSERT_TRUE(zero_buddy::state::shouldRenderScreen(&state, message));
 }
 
 void test_recording_turn_and_commit() {
@@ -281,6 +309,7 @@ int main() {
   RUN_TEST(test_message_cursor_copy_and_truncation);
   RUN_TEST(test_check_delay_backoff);
   RUN_TEST(test_assistant_message_flag_helper);
+  RUN_TEST(test_render_screen_state_helper);
   RUN_TEST(test_recording_turn_and_commit);
   RUN_TEST(test_recording_commit_rejects_overlong_id_without_mutating);
   RUN_TEST(test_recording_abort_does_not_mutate_global_state);

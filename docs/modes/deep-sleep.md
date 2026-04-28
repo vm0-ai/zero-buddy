@@ -48,6 +48,7 @@ It does not own:
 4. Turn the screen off.
    - Blank the display and set brightness to `0`.
    - Do not render any status text or UI.
+   - Clear `GlobalState.lastRenderScreenState`.
 
 5. Disconnect Wi-Fi.
    - Disconnect before sleep to reduce power and avoid leaving the radio active.

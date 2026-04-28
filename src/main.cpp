@@ -21,6 +21,7 @@
 #include "secrets.example.h"
 #endif
 
+#include "screen_renderer.h"
 #include "zero_buddy_core.h"
 #include "zero_buddy_modes.h"
 #include "zero_buddy_state.h"
@@ -42,8 +43,10 @@ using zero_buddy::modes::RecordingMode;
 using zero_buddy::modes::RecordingOps;
 using zero_buddy::state::AssistantCheckResult;
 using zero_buddy::state::GlobalState;
+using zero_buddy::state::RenderScreenKind;
+using zero_buddy::screen::ScreenRenderer;
 
-constexpr uint32_t kRtcMagic = 0x5A0B2026UL;
+constexpr uint32_t kRtcMagic = 0x5A0B2027UL;
 constexpr gpio_num_t kBtnAWakePin = GPIO_NUM_37;
 constexpr gpio_num_t kBtnBPin = GPIO_NUM_39;
 constexpr gpio_num_t kLedGpio = GPIO_NUM_10;
@@ -57,26 +60,9 @@ constexpr uint32_t kLongPressMs = 550;
 constexpr uint32_t kMaxRecordingMs = 60000;
 constexpr uint32_t kBootSplashMs = 3000;
 constexpr uint32_t kWifiConnectAttemptMs = 12000;
-constexpr uint32_t kReadBatteryFollowupRefreshMs = 5000;
 constexpr uint8_t kRecordingCpuMhz = 240;
 constexpr uint8_t kNetworkCpuMhz = 80;
 constexpr uint8_t kReadCpuMhz = 80;
-constexpr uint8_t kScreenBrightness = 90;
-constexpr uint8_t kReadPaddingTop = 8;
-constexpr uint8_t kReadPaddingRight = 8;
-constexpr uint8_t kReadPaddingLeft = kReadPaddingRight + 2;
-constexpr uint8_t kReadPaddingBottom = 8;
-constexpr uint8_t kReadHeaderHeight = 14;
-constexpr uint8_t kReadLineHeight = 16;
-constexpr uint8_t kZeroAvatarWidth = 80;
-constexpr uint8_t kZeroAvatarHeight = 45;
-constexpr uint8_t kZeroAvatarScale = 2;
-constexpr int kZeroAvatarCropLeft = kZeroAvatarWidth / 4;
-constexpr int kZeroAvatarCropRight = kZeroAvatarWidth / 4;
-constexpr int kZeroAvatarVisibleWidth =
-    kZeroAvatarWidth - kZeroAvatarCropLeft - kZeroAvatarCropRight;
-constexpr int kZeroAvatarRightPadding = 8;
-constexpr int kDialoguePadding = 5;
 constexpr size_t kMaxAssistantMessages = 5;
 constexpr size_t kMaxAssistantMessageBytes = 4096;
 
@@ -91,60 +77,13 @@ constexpr char kZeroPostUrl[] = "https://api.vm0.ai/api/v1/chat-threads/messages
 RTC_DATA_ATTR uint32_t g_rtc_magic = 0;
 RTC_DATA_ATTR GlobalState g_state;
 
+ScreenRenderer g_screen(&g_state);
 uint8_t g_pcm_buffer[kPcmBufferBytes] = {0};
 uint8_t g_asr_buffer[kAsrChunkBytes] = {0};
 bool g_btn_b_was_down = false;
 esp_timer_handle_t g_runtime_check_timer = nullptr;
 volatile bool g_runtime_check_due = false;
 volatile bool g_runtime_check_timer_active = false;
-
-constexpr char kZeroAvatar[kZeroAvatarHeight][kZeroAvatarWidth + 1] = {
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWBBBSSSSSBBBWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOOOOSSBWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBSSOOOOOOOOOOOOOOOOOSBWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOOOOOOOOOOOSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBSOOOOKKOOOOOOOOKOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBOOOKKOOOKKOOOOKKKOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBSOOOKOOOOKKOOOOKKOOOOOOOOOOOOOOSWBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBOOOKOOOOKKKOOOOKKOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBWSOOOKOOOOKKKOOOKKKKKOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBWSOOOKKKKKKKKKKKKOOOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBSOOOOOKKKOOOOOOOOOOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOOOOOOSSSSSSOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBWSOOOOOOOOOOOOOOSSSSSSSSSOOOOOOOOSWBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBOOOOOKKKOOOOOOKKKKSSSSSSOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOKOOSSKSSSSSSSSSSOOOOOOSBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSSSSSSSSSSSSSSSSSSSSSSOOOOOSSSSBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSSSSSSSSSSSSSSSSSSSSSSSOOSSSSSSBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSSSOOSSOSSSSOOKKOSSSSSSSSSSKSSSSBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSSKKKKOKSSSOKKSBSOSSSSSSSSKSSSSSBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSSKKBWSKSSSSKKBWBSSSSSSSOKKKKSSBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSSKKBWSKKSSSKKBWSSSSSSSSSOOOSSSBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSSKKBBSKSSSSKKBWSSSSSSSSSSSSSSSBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSSOSBSOOSSSSOSWSSSSSSSSSSSSSSSBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSSSSSSKKOSSSSSSSSSSSSSSSSSSSOOSBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBOSSSSSSKKSSSSSSSSSSSSSSSSOOOOOSWBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBSOOSSSSSSSSSSSSSSSSSSSSSSOOOOOOSBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBSOOSSSSSSSSSSSSKSSSSSSSSOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBWSOOOSSSSSSOOSOKSSSSSSSSOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBSOOOOSSSSSOKKKSSSSSSSSOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBSOOOOOSSSSSSSSSSSSSSOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOSSSSSSSSSSSOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOSSSSSOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOOOOOSSSSSOOOOOOOOOOOOOSWBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOOOOKKKKKKKKKOOOOOOOOOOSBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOKKKKKKKKKKKKOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBSSOOOKKKKKKKKKKKKKKOSSOOOOBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBKKKKKKKKKKKKKKKBBBBSBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWSKKKKKKKKKKKKKKKWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWBKKKKKKKKKKKKKKBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWWWWWWWWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-};
 
 void beepAssistantLedOn();
 bool writeTextFile(const char* path, const std::string& value);
@@ -156,7 +95,11 @@ bool stateLooksValid(const GlobalState& state) {
     return false;
   }
   const auto mode = static_cast<uint8_t>(state.currentMode);
-  return mode <= static_cast<uint8_t>(zero_buddy::state::Mode::Recording);
+  if (mode > static_cast<uint8_t>(zero_buddy::state::Mode::Recording)) {
+    return false;
+  }
+  const auto render_kind = static_cast<uint8_t>(state.lastRenderScreenState.kind);
+  return render_kind <= static_cast<uint8_t>(RenderScreenKind::RecordingFailed);
 }
 
 void ensureGlobalStateInitialized() {
@@ -318,133 +261,6 @@ bool waitForBtnALongPress(uint32_t hold_ms) {
   return false;
 }
 
-uint16_t avatarBackgroundColor() {
-  return M5.Display.color565(220, 224, 230);
-}
-
-uint16_t dialogueBorderColor() {
-  return M5.Display.color565(60, 55, 50);
-}
-
-uint16_t avatarColor(char cell) {
-  switch (cell) {
-    case 'O':
-      return M5.Display.color565(235, 122, 35);
-    case 'S':
-      return M5.Display.color565(244, 206, 154);
-    case 'K':
-      return M5.Display.color565(60, 55, 50);
-    case 'W':
-      return TFT_WHITE;
-    case 'B':
-    default:
-      return avatarBackgroundColor();
-  }
-}
-
-void drawZeroAvatar(int x,
-                    int y,
-                    uint8_t scale = 1,
-                    int crop_left = 0,
-                    int visible_width = kZeroAvatarWidth) {
-  scale = std::max<uint8_t>(1, scale);
-  crop_left = std::max(0, std::min(crop_left, static_cast<int>(kZeroAvatarWidth)));
-  visible_width =
-      std::max(0,
-               std::min(visible_width, static_cast<int>(kZeroAvatarWidth) - crop_left));
-  for (uint8_t row = 0; row < kZeroAvatarHeight; ++row) {
-    for (int col = 0; col < visible_width; ++col) {
-      const uint16_t color = avatarColor(kZeroAvatar[row][crop_left + col]);
-      if (scale == 1) {
-        M5.Display.drawPixel(x + col, y + row, color);
-      } else {
-        M5.Display.fillRect(x + col * scale, y + row * scale, scale, scale, color);
-      }
-    }
-  }
-}
-
-String fittedLine(const char* text, int max_width) {
-  String line(text != nullptr ? text : "");
-  if (M5.Display.textWidth(line.c_str()) <= max_width) {
-    return line;
-  }
-  while (line.length() > 0) {
-    line.remove(line.length() - 1);
-    const String candidate = line + "...";
-    if (M5.Display.textWidth(candidate.c_str()) <= max_width) {
-      return candidate;
-    }
-  }
-  return "";
-}
-
-void printFittedLine(const char* text, int x, int y, int max_width, bool bold = false) {
-  const String line = fittedLine(text, max_width);
-  M5.Display.setCursor(x, y);
-  M5.Display.print(line);
-  if (bold && line.length() > 0) {
-    M5.Display.setCursor(x + 1, y);
-    M5.Display.print(line);
-  }
-}
-
-void drawAvatarDialogue(const char* line1, const char* line2 = "") {
-  M5.Display.setRotation(3);
-  M5.Display.setBrightness(kScreenBrightness);
-  const uint16_t bg = avatarBackgroundColor();
-  const uint16_t border = dialogueBorderColor();
-  M5.Display.fillScreen(bg);
-  const int avatar_w = kZeroAvatarVisibleWidth * kZeroAvatarScale;
-  const int avatar_h = static_cast<int>(kZeroAvatarHeight) * kZeroAvatarScale;
-  const int avatar_x = M5.Display.width() - avatar_w - kZeroAvatarRightPadding;
-  const int avatar_y = (M5.Display.height() - avatar_h) / 2;
-  drawZeroAvatar(
-      avatar_x, avatar_y, kZeroAvatarScale, kZeroAvatarCropLeft, kZeroAvatarVisibleWidth);
-
-  const int bubble_x = kDialoguePadding;
-  const int bubble_y = kDialoguePadding;
-  const int bubble_w = std::max(58, avatar_x - kDialoguePadding - bubble_x);
-  const int bubble_h = M5.Display.height() - kDialoguePadding * 2;
-  const int tail_y = bubble_y + bubble_h / 2;
-  M5.Display.fillRoundRect(bubble_x, bubble_y, bubble_w, bubble_h, 7, TFT_WHITE);
-  M5.Display.drawRoundRect(bubble_x, bubble_y, bubble_w, bubble_h, 7, border);
-  M5.Display.drawRoundRect(bubble_x + 2, bubble_y + 2, bubble_w - 4, bubble_h - 4, 5, border);
-  M5.Display.fillTriangle(bubble_x + bubble_w - 1,
-                          tail_y - 7,
-                          avatar_x - 1,
-                          tail_y,
-                          bubble_x + bubble_w - 1,
-                          tail_y + 7,
-                          TFT_WHITE);
-  M5.Display.drawTriangle(bubble_x + bubble_w - 1,
-                          tail_y - 7,
-                          avatar_x - 1,
-                          tail_y,
-                          bubble_x + bubble_w - 1,
-                          tail_y + 7,
-                          border);
-
-  const int text_x = bubble_x + 10;
-  const int text_width = bubble_w - 20;
-  M5.Display.setTextColor(border, TFT_WHITE);
-  M5.Display.setTextWrap(false);
-  M5.Display.setFont(&fonts::Font2);
-  printFittedLine(line1, text_x, bubble_y + 12, text_width);
-  if (line2 != nullptr && line2[0] != '\0') {
-    M5.Display.setFont(&fonts::Font0);
-    printFittedLine(line2, text_x, bubble_y + 42, text_width);
-  }
-}
-
-void drawAvatarStatus(const char* line1, const char* line2 = "") {
-  drawAvatarDialogue(line1, line2);
-}
-
-void drawEmptyReadScreen() {
-  drawAvatarDialogue("no message");
-}
-
 bool externalPowerConnected() {
   const int16_t vbus_mv = M5.Power.getVBUSVoltage();
   const auto charge_state = M5.Power.isCharging();
@@ -457,153 +273,6 @@ bool externalPowerConnected() {
   Serial.print(" charging=");
   Serial.println(static_cast<int>(charge_state));
   return connected;
-}
-
-uint8_t batteryLevelBarsFor(int32_t level) {
-  if (level < 0) {
-    return 0;
-  }
-  const int32_t clamped = std::max<int32_t>(0, std::min<int32_t>(100, level));
-  if (clamped == 0) {
-    return 0;
-  }
-  return static_cast<uint8_t>(std::min<int32_t>(4, (clamped + 24) / 25));
-}
-
-uint8_t batteryLevelBars() {
-  return batteryLevelBarsFor(M5.Power.getBatteryLevel());
-}
-
-void drawReadBatteryLevel() {
-  const uint16_t bg = avatarBackgroundColor();
-  const uint16_t fg = dialogueBorderColor();
-  constexpr int kBodyWidth = 22;
-  constexpr int kBodyHeight = 10;
-  constexpr int kCapWidth = 2;
-  constexpr int kBarWidth = 3;
-  constexpr int kBarGap = 2;
-  const int x = std::max(0, M5.Display.width() - kReadPaddingRight -
-                                kBodyWidth - kCapWidth);
-  const int y = kReadPaddingTop + 1;
-  const int clear_x = std::max(0, x - 1);
-  M5.Display.fillRect(clear_x,
-                      0,
-                      M5.Display.width() - clear_x,
-                      kReadPaddingTop + kReadHeaderHeight,
-                      bg);
-  M5.Display.drawRect(x, y, kBodyWidth, kBodyHeight, fg);
-  M5.Display.fillRect(x + kBodyWidth, y + 3, kCapWidth, 4, fg);
-
-  const uint8_t bars = batteryLevelBars();
-  const int bar_y = y + 2;
-  for (uint8_t i = 0; i < 4; ++i) {
-    const int bar_x = x + 2 + i * (kBarWidth + kBarGap);
-    if (i < bars) {
-      M5.Display.fillRect(bar_x, bar_y, kBarWidth, kBodyHeight - 4, fg);
-    } else {
-      M5.Display.drawRect(bar_x, bar_y, kBarWidth, kBodyHeight - 4, fg);
-    }
-  }
-}
-
-void drawBootScreen() {
-  M5.Display.setRotation(3);
-  M5.Display.setBrightness(kScreenBrightness);
-  const uint16_t bg = avatarBackgroundColor();
-  const uint16_t border = dialogueBorderColor();
-  M5.Display.fillScreen(bg);
-
-  constexpr uint8_t kBootAvatarScale = 1;
-  const int avatar_w = kZeroAvatarVisibleWidth * kBootAvatarScale;
-  const int avatar_h = static_cast<int>(kZeroAvatarHeight) * kBootAvatarScale;
-  const int avatar_x = M5.Display.width() - avatar_w - kZeroAvatarRightPadding;
-  const int avatar_y = (M5.Display.height() - avatar_h) / 2;
-  drawZeroAvatar(avatar_x,
-                 avatar_y,
-                 kBootAvatarScale,
-                 kZeroAvatarCropLeft,
-                 kZeroAvatarVisibleWidth);
-
-  const int bubble_x = kDialoguePadding;
-  const int bubble_y = kDialoguePadding;
-  const int bubble_w = std::max(58, avatar_x - kDialoguePadding - bubble_x);
-  const int bubble_h = M5.Display.height() - kDialoguePadding * 2;
-  const int tail_y = bubble_y + bubble_h / 2;
-  M5.Display.fillRoundRect(bubble_x, bubble_y, bubble_w, bubble_h, 7, TFT_WHITE);
-  M5.Display.drawRoundRect(bubble_x, bubble_y, bubble_w, bubble_h, 7, border);
-  M5.Display.drawRoundRect(bubble_x + 2, bubble_y + 2, bubble_w - 4, bubble_h - 4, 5, border);
-  M5.Display.fillTriangle(bubble_x + bubble_w - 1,
-                          tail_y - 7,
-                          avatar_x - 1,
-                          tail_y,
-                          bubble_x + bubble_w - 1,
-                          tail_y + 7,
-                          TFT_WHITE);
-  M5.Display.drawTriangle(bubble_x + bubble_w - 1,
-                          tail_y - 7,
-                          avatar_x - 1,
-                          tail_y,
-                          bubble_x + bubble_w - 1,
-                          tail_y + 7,
-                          border);
-
-  const int text_x = bubble_x + 7;
-  const int text_width = bubble_w - 14;
-  M5.Display.setTextColor(border, TFT_WHITE);
-  M5.Display.setTextWrap(false);
-  M5.Display.setFont(&fonts::Font4);
-  printFittedLine("Zero", text_x, bubble_y + 18, text_width, true);
-  M5.Display.setFont(&fonts::Font0);
-  printFittedLine("your trustworthy AI teammate", text_x, bubble_y + 72, text_width);
-}
-
-size_t utf8DisplayWidthPx(const std::string& text, size_t* offset) {
-  if (offset == nullptr || *offset >= text.size()) {
-    return 0;
-  }
-  const uint8_t first = static_cast<uint8_t>(text[*offset]);
-  if (text[*offset] == '\n') {
-    ++(*offset);
-    return 0;
-  }
-  if (first < 0x80) {
-    ++(*offset);
-    return first == ' ' ? 4 : 6;
-  }
-  size_t len = 1;
-  if ((first & 0xE0) == 0xC0) {
-    len = 2;
-  } else if ((first & 0xF0) == 0xE0) {
-    len = 3;
-  } else if ((first & 0xF8) == 0xF0) {
-    len = 4;
-  }
-  *offset = std::min(text.size(), *offset + len);
-  return 12;
-}
-
-size_t estimateWrappedTextHeight(const std::string& text, size_t width_px) {
-  if (width_px == 0 || text.empty()) {
-    return kReadLineHeight;
-  }
-  size_t lines = 1;
-  size_t line_width = 0;
-  for (size_t i = 0; i < text.size();) {
-    if (text[i] == '\n') {
-      ++lines;
-      line_width = 0;
-      ++i;
-      continue;
-    }
-    const size_t glyph_width = utf8DisplayWidthPx(text, &i);
-    if (line_width > 0 && line_width + glyph_width > width_px) {
-      ++lines;
-      line_width = glyph_width;
-    } else {
-      line_width += glyph_width;
-    }
-  }
-  return lines * kReadLineHeight;
 }
 
 const char* modeRunErrorName(ModeRunError error) {
@@ -1302,8 +971,7 @@ class HardwareDeepSleepOps : public DeepSleepOps {
   }
 
   void screenOff() override {
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.setBrightness(0);
+    g_screen.screenOff();
   }
 
   void disconnectWifi() override {
@@ -1336,8 +1004,7 @@ class HardwareDeepSleepOps : public DeepSleepOps {
 class HardwareReadOps : public ReadOps {
  public:
   void screenOn() override {
-    M5.Display.setRotation(3);
-    M5.Display.setBrightness(kScreenBrightness);
+    g_screen.screenOn();
   }
 
   void setCpuForReading() override {
@@ -1357,19 +1024,11 @@ class HardwareReadOps : public ReadOps {
   }
 
   size_t maxScrollTopForMessage(const std::string& message) override {
-    const size_t width = static_cast<size_t>(
-        std::max(1, M5.Display.width() -
-                        static_cast<int>(kReadPaddingLeft + kReadPaddingRight)));
-    const size_t viewport = readViewportHeight();
-    const size_t text_height = estimateWrappedTextHeight(message, width);
-    if (text_height <= viewport) {
-      return 0;
-    }
-    return text_height - viewport;
+    return g_screen.maxScrollTopForMessage(message);
   }
 
   size_t scrollStep() override {
-    return readViewportHeight();
+    return g_screen.scrollStep();
   }
 
   bool saveReadProgress(size_t count, size_t index, size_t scroll_top) override {
@@ -1388,7 +1047,7 @@ class HardwareReadOps : public ReadOps {
   }
 
   void renderNoAssistantMessage() override {
-    drawEmptyReadScreen();
+    g_screen.render_screen_read_empty();
     refreshBatteryLevel();
   }
 
@@ -1396,43 +1055,7 @@ class HardwareReadOps : public ReadOps {
                               size_t count,
                               const std::string& message,
                               size_t scroll_top) override {
-    M5.Display.setRotation(3);
-    M5.Display.setBrightness(kScreenBrightness);
-    const uint16_t bg = avatarBackgroundColor();
-    const uint16_t fg = dialogueBorderColor();
-    M5.Display.fillScreen(bg);
-    M5.Display.setTextColor(fg, bg);
-    M5.Display.setTextWrap(false);
-    M5.Display.setFont(&fonts::Font0);
-    M5.Display.setCursor(kReadPaddingLeft, kReadPaddingTop);
-    M5.Display.print(String(static_cast<unsigned>(index + 1)) + "/" +
-                     String(static_cast<unsigned>(count)));
-    const int divider_y = static_cast<int>(kReadPaddingTop + kReadHeaderHeight);
-    M5.Display.drawFastHLine(kReadPaddingLeft,
-                             divider_y,
-                             M5.Display.width() - kReadPaddingLeft - kReadPaddingRight,
-                             fg);
-
-    const int body_y = readBodyTop();
-    const int body_h = static_cast<int>(readViewportHeight());
-    M5.Display.setClipRect(kReadPaddingLeft,
-                           body_y,
-                           M5.Display.width() - kReadPaddingLeft - kReadPaddingRight,
-                           body_h);
-    M5.Display.setTextWrap(true);
-    M5.Display.setFont(&fonts::efontCN_12);
-    M5.Display.setCursor(kReadPaddingLeft,
-                         body_y - static_cast<int>(scroll_top));
-    M5.Display.print(message.c_str());
-    M5.Display.clearClipRect();
-    M5.Display.setTextWrap(false);
-
-    const bool has_next_page =
-        scroll_top < maxScrollTopForMessage(message) || index + 1 < count;
-    if (has_next_page) {
-      drawNextPageArrow();
-    }
-    refreshBatteryLevel();
+    g_screen.render_screen_read_message(index, count, message, scroll_top);
   }
 
   ReadInput waitForInput(uint32_t timeout_ms) override {
@@ -1468,71 +1091,35 @@ class HardwareReadOps : public ReadOps {
 
  private:
   void refreshBatteryLevel() {
-    drawReadBatteryLevel();
+    g_screen.render_element_battery_level();
   }
 
   void scheduleBatteryFollowupRefresh() {
-    battery_followup_due_ms_ = millis() + kReadBatteryFollowupRefreshMs;
-    battery_followup_refresh_scheduled_ = true;
+    g_screen.scheduleBatteryFollowupRefresh(millis());
   }
 
   void refreshBatteryLevelIfDue() {
-    if (!battery_followup_refresh_scheduled_) {
-      return;
-    }
-    if (static_cast<int32_t>(millis() - battery_followup_due_ms_) < 0) {
-      return;
-    }
-    battery_followup_refresh_scheduled_ = false;
-    refreshBatteryLevel();
+    g_screen.renderBatteryFollowupIfDue(millis());
   }
-
-  int readBodyTop() const {
-    return static_cast<int>(kReadPaddingTop + kReadHeaderHeight + 4);
-  }
-
-  size_t readViewportHeight() const {
-    return static_cast<size_t>(
-        std::max(1, M5.Display.height() - readBodyTop() -
-                    static_cast<int>(kReadPaddingBottom)));
-  }
-
-  void drawNextPageArrow() {
-    const int right = M5.Display.width() - kReadPaddingRight - 1;
-    const int bottom = M5.Display.height() - kReadPaddingBottom - 1;
-    const int cx = right - 6;
-    const int cy = bottom - 5;
-    M5.Display.fillTriangle(cx - 5,
-                            cy - 2,
-                            cx + 5,
-                            cy - 2,
-                            cx,
-                            cy + 5,
-                            dialogueBorderColor());
-  }
-
-  uint32_t battery_followup_due_ms_ = 0;
-  bool battery_followup_refresh_scheduled_ = false;
 };
 
 class HardwareRecordingOps : public RecordingOps {
  public:
   void screenOn() override {
-    M5.Display.setRotation(3);
-    M5.Display.setBrightness(kScreenBrightness);
-    drawAvatarStatus("recording", "hold BtnA");
+    g_screen.screenOn();
+    g_screen.render_screen_recording_prompt();
   }
 
   void showResult(const ModeRunResult& result) {
     if (result.status == ModeRunStatus::Completed) {
-      drawAvatarStatus("sent", "message sent");
+      g_screen.render_screen_recording_sent();
       Serial.println("recording completed");
       Serial.flush();
       restartAwareDelay(5000);
       return;
     }
     if (result.status == ModeRunStatus::Aborted) {
-      drawAvatarStatus("aborted", "recording");
+      g_screen.render_screen_recording_aborted();
       Serial.print("recording aborted: ");
       Serial.println("abort");
       Serial.flush();
@@ -1546,7 +1133,7 @@ class HardwareRecordingOps : public RecordingOps {
       detail += ":";
       detail += recording_failure_detail_;
     }
-    drawAvatarStatus("failed", detail.c_str());
+    g_screen.render_screen_recording_failed(detail.c_str());
     Serial.print("recording failed: ");
     Serial.println(error);
     if (recording_failure_detail_ != nullptr && recording_failure_detail_[0] != '\0') {
@@ -1571,7 +1158,7 @@ class HardwareRecordingOps : public RecordingOps {
 
   bool recordVoiceToFile() override {
     recording_failure_detail_ = "";
-    drawAvatarStatus("recording", "speak now");
+    g_screen.render_screen_recording_active();
     auto mic_cfg = M5.Mic.config();
     mic_cfg.pin_data_in = GPIO_NUM_34;
     mic_cfg.pin_ws = GPIO_NUM_0;
@@ -1633,7 +1220,7 @@ class HardwareRecordingOps : public RecordingOps {
 
   bool ensureWifiConnected() override {
     recording_failure_detail_ = "";
-    drawAvatarStatus("recording", "wifi");
+    g_screen.render_screen_recording_wifi();
     const bool ok = connectWifi(nullptr);
     if (!ok) {
       recording_failure_detail_ = "connect";
@@ -1643,7 +1230,7 @@ class HardwareRecordingOps : public RecordingOps {
 
   bool voiceToText(std::string* text_out) override {
     recording_failure_detail_ = "";
-    drawAvatarStatus("recording", "speech to text");
+    g_screen.render_screen_recording_transcribing();
     const bool ok = transcribePcmFile(kVoicePcmPath, text_out);
     if (!ok) {
       recording_failure_detail_ = "asr";
@@ -1661,7 +1248,7 @@ class HardwareRecordingOps : public RecordingOps {
       return false;
     }
     recording_failure_detail_ = "";
-    drawAvatarStatus("recording", "send message");
+    g_screen.render_screen_recording_sending();
     const String body =
         String("{\"prompt\":\"") + jsonEscape(String(text.c_str())) +
         "\",\"threadId\":\"" + kZeroThreadId + "\"}";
@@ -1835,7 +1422,7 @@ void setup() {
 
   const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
   if (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
-    drawBootScreen();
+    g_screen.render_screen_boot();
     restartAwareDelay(kBootSplashMs);
   }
 

@@ -29,11 +29,35 @@ enum class Event : uint8_t {
   ChargingDetected,
 };
 
+enum class RenderScreenKind : uint8_t {
+  None,
+  Boot,
+  ReadEmpty,
+  ReadAssistantMessage,
+  RecordingPrompt,
+  RecordingActive,
+  RecordingWifi,
+  RecordingTranscribing,
+  RecordingSending,
+  RecordingSent,
+  RecordingAborted,
+  RecordingFailed,
+};
+
+struct RenderScreenState {
+  RenderScreenKind kind = RenderScreenKind::None;
+  uint32_t value1 = 0;
+  uint32_t value2 = 0;
+  uint32_t value3 = 0;
+  uint32_t value4 = 0;
+};
+
 struct GlobalState {
   Mode currentMode = Mode::DeepSleep;
   uint32_t checkDelayMs = kInitialCheckDelayMs;
   char lastMessageId[kLastMessageIdBytes] = {0};
   bool hasAssistantMessage = false;
+  RenderScreenState lastRenderScreenState;
 };
 
 struct AssistantCheckResult {
@@ -71,6 +95,11 @@ void advanceCheckDelay(GlobalState* state,
 
 bool hasAssistantMessage(const GlobalState& state);
 void setHasAssistantMessage(GlobalState* state, bool hasAssistantMessage);
+
+bool sameRenderScreenState(const RenderScreenState& lhs, const RenderScreenState& rhs);
+bool shouldRenderScreen(GlobalState* state, const RenderScreenState& next);
+void setLastRenderScreenState(GlobalState* state, const RenderScreenState& next);
+void clearLastRenderScreenState(GlobalState* state);
 
 void beginRecordingTurn(GlobalState* state);
 bool commitRecordingMessageSent(GlobalState* state, const std::string& userMessageId);

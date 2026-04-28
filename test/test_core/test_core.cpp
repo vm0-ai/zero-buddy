@@ -197,6 +197,14 @@ void test_battery_fill_pixels() {
   TEST_ASSERT_EQUAL_UINT8(0, zero_buddy::batteryFillPixels(80, 0));
 }
 
+void test_external_power_present_prefers_vbus_over_charge_current() {
+  TEST_ASSERT_TRUE(zero_buddy::externalPowerPresent(5000, false));
+  TEST_ASSERT_TRUE(zero_buddy::externalPowerPresent(-1, true));
+  TEST_ASSERT_FALSE(zero_buddy::externalPowerPresent(-1, false));
+  TEST_ASSERT_FALSE(zero_buddy::externalPowerPresent(4200, false));
+  TEST_ASSERT_TRUE(zero_buddy::externalPowerPresent(4200, false, 4000));
+}
+
 void test_power_window_state_machine() {
   zero_buddy::PowerWindowState state;
   TEST_ASSERT_FALSE(state.screen_awake);
@@ -395,6 +403,7 @@ int main() {
   RUN_TEST(test_notification_blink_state_machine);
   RUN_TEST(test_brightness_level_cycles);
   RUN_TEST(test_battery_fill_pixels);
+  RUN_TEST(test_external_power_present_prefers_vbus_over_charge_current);
   RUN_TEST(test_power_window_state_machine);
   RUN_TEST(test_assistant_queue_manifest_round_trip);
   RUN_TEST(test_buddy_home_state_events);

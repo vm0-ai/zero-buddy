@@ -391,6 +391,18 @@ uint8_t batteryFillPixels(int32_t level_percent, uint8_t max_pixels) {
   return static_cast<uint8_t>(std::max<uint32_t>(1, fill));
 }
 
+bool externalPowerPresent(int32_t vbus_mv,
+                          bool battery_charging,
+                          int32_t present_threshold_mv) {
+  if (battery_charging) {
+    return true;
+  }
+  if (present_threshold_mv <= 0) {
+    present_threshold_mv = 4300;
+  }
+  return vbus_mv >= present_threshold_mv;
+}
+
 void wakePowerWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms) {
   if (state == nullptr) {
     return;

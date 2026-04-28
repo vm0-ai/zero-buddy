@@ -103,10 +103,12 @@ struct FakeDeepSleepOps : DeepSleepOps {
   std::vector<std::string> calls;
   uint32_t rtc_delay_ms = 0;
   bool led = true;
+  bool charging = false;
   std::function<void()> on_rtc;
   std::function<void()> on_button;
   std::function<void()> on_screen;
   std::function<void()> on_disconnect;
+  std::function<void()> on_charging;
 
   void configureRtcWake(uint32_t delay_ms) override {
     rtc_delay_ms = delay_ms;
@@ -135,6 +137,14 @@ struct FakeDeepSleepOps : DeepSleepOps {
     if (on_disconnect) {
       on_disconnect();
     }
+  }
+
+  bool isCharging() override {
+    calls.push_back("charging?");
+    if (on_charging) {
+      on_charging();
+    }
+    return charging;
   }
 
   void enterCpuHibernate() override {
@@ -499,7 +509,7 @@ void test_deep_sleep_main_runs_hibernate_last() {
   TEST_ASSERT_FALSE(ops.calls.empty());
   TEST_ASSERT_EQUAL_STRING("hibernate", ops.calls.back().c_str());
   TEST_ASSERT_TRUE(ops.led);
-  TEST_ASSERT_EQUAL_STRING("rtc:300000,btn-wake,screen-off,wifi-disconnect,hibernate",
+  TEST_ASSERT_EQUAL_STRING("rtc:300000,charging?,btn-wake,screen-off,wifi-disconnect,hibernate",
                            joinCalls(ops.calls).c_str());
 }
 
@@ -512,7 +522,34 @@ void test_deep_sleep_main_never_changes_led() {
   assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
 
   TEST_ASSERT_TRUE(ops.led);
-  TEST_ASSERT_EQUAL_STRING("rtc:30000,btn-wake,screen-off,wifi-disconnect,hibernate",
+  TEST_ASSERT_EQUAL_STRING("rtc:30000,charging?,btn-wake,screen-off,wifi-disconnect,hibernate",
+                           joinCalls(ops.calls).c_str());
+}
+
+void test_deep_sleep_main_completes_after_rtc_when_charging() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+
+  FakeDeepSleepOps ops;
+  ops.charging = true;
+  DeepSleepMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
+
+  TEST_ASSERT_EQUAL_STRING("rtc:30000,charging?",
+                           joinCalls(ops.calls).c_str());
+}
+
+void test_deep_sleep_abort_during_charging_check_cancels_timer() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+
+  FakeDeepSleepOps ops;
+  DeepSleepMode mode(&state, &ops);
+  ops.on_charging = [&]() {
+    mode.abort("btn_a_long_press");
+  };
+
+  assertResult(ModeRunStatus::Aborted, ModeRunError::None, mode.main());
+  TEST_ASSERT_TRUE(mode.abortRequested());
+  TEST_ASSERT_EQUAL_STRING("rtc:30000,charging?,cancel-rtc",
                            joinCalls(ops.calls).c_str());
 }
 
@@ -529,11 +566,11 @@ void test_deep_sleep_abort_after_screen_off_cancels_timer_without_touching_led()
   assertResult(ModeRunStatus::Aborted, ModeRunError::None, mode.main());
   TEST_ASSERT_TRUE(mode.abortRequested());
   TEST_ASSERT_TRUE(ops.led);
-  TEST_ASSERT_EQUAL_STRING("rtc:30000,btn-wake,screen-off,cancel-rtc",
+  TEST_ASSERT_EQUAL_STRING("rtc:30000,charging?,btn-wake,screen-off,cancel-rtc",
                            joinCalls(ops.calls).c_str());
 
   mode.abort("again");
-  TEST_ASSERT_EQUAL_STRING("rtc:30000,btn-wake,screen-off,cancel-rtc",
+  TEST_ASSERT_EQUAL_STRING("rtc:30000,charging?,btn-wake,screen-off,cancel-rtc",
                            joinCalls(ops.calls).c_str());
 }
 
@@ -560,6 +597,22 @@ void test_read_empty_short_press_resets_idle_timer() {
   TEST_ASSERT_EQUAL_STRING(
       "screen-on,cpu-read,count,load-progress,render-empty,wait:15000,"
       "render-empty,wait:15000",
+                           joinCalls(ops.calls).c_str());
+}
+
+void test_read_check_due_aborts_without_clearing_messages() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+
+  FakeReadOps ops;
+  ops.inputs = {ReadInput::CheckDue};
+  ReadMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Aborted, ModeRunError::None, mode.main());
+
+  TEST_ASSERT_TRUE(mode.abortRequested());
+  TEST_ASSERT_EQUAL_STRING("check_due", mode.abortReason());
+  TEST_ASSERT_EQUAL_STRING(
+      "screen-on,cpu-read,count,load-progress,render-empty,wait:15000,cancel-idle,"
+      "close-files",
       joinCalls(ops.calls).c_str());
 }
 
@@ -764,9 +817,12 @@ int main() {
   RUN_TEST(test_check_assistant_abort_during_poll_cleans_without_commit);
   RUN_TEST(test_deep_sleep_main_runs_hibernate_last);
   RUN_TEST(test_deep_sleep_main_never_changes_led);
+  RUN_TEST(test_deep_sleep_main_completes_after_rtc_when_charging);
+  RUN_TEST(test_deep_sleep_abort_during_charging_check_cancels_timer);
   RUN_TEST(test_deep_sleep_abort_after_screen_off_cancels_timer_without_touching_led);
   RUN_TEST(test_read_main_without_messages_shows_empty_and_completes);
   RUN_TEST(test_read_empty_short_press_resets_idle_timer);
+  RUN_TEST(test_read_check_due_aborts_without_clearing_messages);
   RUN_TEST(test_read_main_renders_saved_progress_and_scrolls_on_short_press);
   RUN_TEST(test_read_main_advances_to_next_message_when_current_is_fully_scrolled);
   RUN_TEST(test_read_main_completes_when_last_message_is_fully_read);

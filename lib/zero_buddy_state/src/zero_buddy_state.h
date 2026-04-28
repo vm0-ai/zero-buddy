@@ -26,6 +26,7 @@ enum class Event : uint8_t {
   CheckComplete,
   ReadComplete,
   RecordingComplete,
+  ChargingDetected,
 };
 
 struct GlobalState {

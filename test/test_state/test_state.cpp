@@ -263,6 +263,14 @@ void test_state_transitions() {
   TEST_ASSERT_TRUE(transition.valid);
   TEST_ASSERT_FALSE(transition.requiresAbort);
   assertMode(Mode::DeepSleep, transition.nextMode);
+
+  zero_buddy::state::setMode(&state, Mode::DeepSleep);
+  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::ChargingDetected);
+  TEST_ASSERT_TRUE(transition.valid);
+  TEST_ASSERT_FALSE(transition.requiresAbort);
+  assertMode(Mode::Read, transition.nextMode);
+  TEST_ASSERT_TRUE(zero_buddy::state::applyTransition(&state, transition));
+  assertMode(Mode::Read, state.currentMode);
 }
 
 }  // namespace

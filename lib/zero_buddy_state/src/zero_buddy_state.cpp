@@ -164,6 +164,9 @@ Transition transitionForEvent(Mode mode, Event event) {
       if (event == Event::RtcWake) {
         transition.valid = true;
         transition.nextMode = Mode::CheckAssistantMessage;
+      } else if (event == Event::ChargingDetected) {
+        transition.valid = true;
+        transition.nextMode = Mode::Read;
       } else if (event == Event::BtnAShortPress) {
         transition.valid = true;
         transition.requiresAbort = true;

@@ -71,6 +71,9 @@ The main requirement is immediate termination of in-flight work, followed by cle
 
 Typical trigger:
 
+- BtnA short press while `CheckAssistantMessage` is running.
+- The state machine calls `CheckAssistantMessage.abort("btn_a_short_press")`.
+- After `abort` completes, the state machine switches to `Read`.
 - BtnA long press while `CheckAssistantMessage` is running.
 - The state machine calls `CheckAssistantMessage.abort("btn_a_long_press")`.
 - After `abort` completes, the state machine switches to `Recording`.
@@ -96,6 +99,7 @@ Typical trigger:
 - Disconnect Wi-Fi.
 - Turn off Wi-Fi.
 - Enter `DeepSleep`.
+- Enter `Read`.
 - Enter `Recording`.
 
 Those are state machine or later mode responsibilities.

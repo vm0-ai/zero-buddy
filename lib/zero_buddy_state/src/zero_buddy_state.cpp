@@ -179,6 +179,10 @@ Transition transitionForEvent(Mode mode, Event event) {
       if (event == Event::CheckComplete) {
         transition.valid = true;
         transition.nextMode = Mode::DeepSleep;
+      } else if (event == Event::BtnAShortPress) {
+        transition.valid = true;
+        transition.requiresAbort = true;
+        transition.nextMode = Mode::Read;
       } else if (event == Event::BtnALongPress) {
         transition.valid = true;
         transition.requiresAbort = true;

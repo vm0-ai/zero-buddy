@@ -17,6 +17,7 @@ The rewritten firmware starts with four core modes:
   - Checks whether the assistant has a new message or notification.
   - This is a short-lived task mode.
   - After the check completes, it automatically transitions back to `DeepSleep`.
+  - If BtnA short press is detected during the check, the check is aborted before entering `Read`.
   - If BtnA long press is detected during the check, the check is aborted before entering `Recording`.
 
 - `Recording`
@@ -130,6 +131,7 @@ stateDiagram-v2
     Read --> DeepSleep: read complete / idle timeout
 
     DeepSleep --> Recording: BtnA long press
+    CheckAssistantMessage --> Read: BtnA short press / abort check
     CheckAssistantMessage --> Recording: BtnA long press / abort check
     Read --> Recording: BtnA long press / abort read
 
@@ -150,6 +152,7 @@ stateDiagram-v2
 
 - `BtnAShortPress`
   - Starts `Read` from `DeepSleep`.
+  - Aborts the check and starts `Read` from `CheckAssistantMessage`.
   - Inside `Read`, this is handled by the mode to scroll the current assistant message or advance to the next assistant message.
 
 - `CheckComplete`
@@ -174,7 +177,7 @@ A transition follows a fixed sequence:
 4. Update the current mode.
 5. Call the new mode's `enter(context)`.
 
-`CheckAssistantMessage -> Recording` and `Read -> Recording` require an explicit mid-flight abort. The check may be performing network work, so it must call `abort("btn_a_long_press")` before entering `Recording`. Read may be waiting for user input or holding file/display resources, so it also aborts first.
+`CheckAssistantMessage -> Read`, `CheckAssistantMessage -> Recording`, and `Read -> Recording` require an explicit mid-flight abort. The check may be performing network work, so it must call `abort("btn_a_short_press")` before entering `Read` or `abort("btn_a_long_press")` before entering `Recording`. Read may be waiting for user input or holding file/display resources, so it also aborts first.
 
 ## Initial Scope
 

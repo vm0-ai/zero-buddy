@@ -2,14 +2,15 @@
 
 `Recording` is entered when the user long-presses BtnA from `DeepSleep`, `CheckAssistantMessage`, or `Read`. It records the user's voice, transcribes it, sends the recognized text as a user message, updates the global message cursor with the returned user `messageId`, resets assistant-check backoff, then returns control to the state machine.
 
-This mode may turn the screen on, but it does not own detailed rendering. It also does not decide the next mode directly. After `main` finishes or `abort` completes, the state machine performs the next transition.
+This mode turns the screen on and owns the recording status/result rendering. It also does not decide the next mode directly. After `main` finishes or `abort` completes, the state machine performs the next transition.
 
 ## Owned Work
 
 `Recording` owns:
 
 - Turning the screen on for the recording session.
-- Rendering the Zero dot-matrix avatar on recording status screens.
+- Rendering the Zero dot-matrix avatar and dialogue bubble on recording status screens.
+- Rendering the final recording result and keeping it visible for 5 seconds before the state machine enters `DeepSleep`.
 - Selecting a CPU frequency that can reliably support audio capture.
 - Canceling pending RTC assistant-check wake state.
 - Clearing stored assistant messages through `clear_assistant_message` before starting a new user turn.
@@ -29,15 +30,13 @@ It does not own:
 - Entering `DeepSleep`.
 - Restoring CPU frequency after exit.
 - Turning Wi-Fi off after exit.
-- Detailed screen rendering.
 
 ## Main Process
 
 `main(context)` is the entry process for this mode.
 
 1. Turn the screen on.
-   - The screen may be used to show recording progress later.
-   - This is only a power/display-state action, not a rendering design.
+   - Render the Zero avatar and dialogue bubble for recording status.
 
 2. Set CPU frequency for recording.
    - Use `240MHz`, or the lowest frequency proven to reliably support microphone capture and file writes.
@@ -86,6 +85,7 @@ It does not own:
 
 11. Return to the state machine.
     - `main` returns a completion result.
+    - The runtime renders the success or failure result for 5 seconds.
     - The state machine switches to the next mode, currently `DeepSleep`.
 
 ## Abort Process

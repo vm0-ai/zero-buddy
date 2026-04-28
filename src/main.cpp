@@ -52,16 +52,27 @@ constexpr size_t kPcmBufferBytes = kMicSamplesPerRead * sizeof(int16_t);
 constexpr size_t kAsrChunkBytes = kSampleRate * 2 / 5;
 constexpr uint32_t kLongPressMs = 550;
 constexpr uint32_t kMaxRecordingMs = 60000;
+constexpr uint32_t kBootSplashMs = 3000;
 constexpr uint32_t kWifiConnectAttemptMs = 12000;
 constexpr uint8_t kRecordingCpuMhz = 240;
 constexpr uint8_t kNetworkCpuMhz = 80;
 constexpr uint8_t kReadCpuMhz = 80;
 constexpr uint8_t kScreenBrightness = 90;
-constexpr uint8_t kReadHeaderHeight = 16;
+constexpr uint8_t kReadPaddingTop = 8;
+constexpr uint8_t kReadPaddingRight = 8;
+constexpr uint8_t kReadPaddingLeft = kReadPaddingRight + 2;
+constexpr uint8_t kReadPaddingBottom = 8;
+constexpr uint8_t kReadHeaderHeight = 14;
 constexpr uint8_t kReadLineHeight = 16;
-constexpr uint8_t kReadHorizontalPadding = 5;
 constexpr uint8_t kZeroAvatarWidth = 80;
 constexpr uint8_t kZeroAvatarHeight = 45;
+constexpr uint8_t kZeroAvatarScale = 2;
+constexpr int kZeroAvatarCropLeft = kZeroAvatarWidth / 4;
+constexpr int kZeroAvatarCropRight = kZeroAvatarWidth / 4;
+constexpr int kZeroAvatarVisibleWidth =
+    kZeroAvatarWidth - kZeroAvatarCropLeft - kZeroAvatarCropRight;
+constexpr int kZeroAvatarRightPadding = 8;
+constexpr int kDialoguePadding = 5;
 constexpr size_t kMaxAssistantMessages = 5;
 constexpr size_t kMaxAssistantMessageBytes = 4096;
 
@@ -216,24 +227,15 @@ bool waitForBtnALongPress(uint32_t hold_ms) {
   return false;
 }
 
-void drawStatus(const char* line1, const char* line2 = "") {
-  M5.Display.setBrightness(kScreenBrightness);
-  M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.setTextWrap(false);
-  M5.Display.setFont(&fonts::Font2);
-  M5.Display.setCursor(8, 28);
-  M5.Display.print(line1 != nullptr ? line1 : "");
-  M5.Display.setFont(&fonts::Font0);
-  M5.Display.setCursor(8, 58);
-  M5.Display.print(line2 != nullptr ? line2 : "");
+uint16_t avatarBackgroundColor() {
+  return M5.Display.color565(220, 224, 230);
 }
 
-bool isAvatarEyeWhite(uint8_t row, uint8_t col) {
-  return row >= 23 && row <= 26 && col >= 29 && col <= 41;
+uint16_t dialogueBorderColor() {
+  return M5.Display.color565(60, 55, 50);
 }
 
-uint16_t avatarColor(uint8_t row, uint8_t col, char cell) {
+uint16_t avatarColor(char cell) {
   switch (cell) {
     case 'O':
       return M5.Display.color565(235, 122, 35);
@@ -242,18 +244,26 @@ uint16_t avatarColor(uint8_t row, uint8_t col, char cell) {
     case 'K':
       return M5.Display.color565(60, 55, 50);
     case 'W':
-      return isAvatarEyeWhite(row, col) ? TFT_WHITE : TFT_BLACK;
+      return TFT_WHITE;
     case 'B':
     default:
-      return TFT_BLACK;
+      return avatarBackgroundColor();
   }
 }
 
-void drawZeroAvatar(int x, int y, uint8_t scale = 1) {
+void drawZeroAvatar(int x,
+                    int y,
+                    uint8_t scale = 1,
+                    int crop_left = 0,
+                    int visible_width = kZeroAvatarWidth) {
   scale = std::max<uint8_t>(1, scale);
+  crop_left = std::max(0, std::min(crop_left, static_cast<int>(kZeroAvatarWidth)));
+  visible_width =
+      std::max(0,
+               std::min(visible_width, static_cast<int>(kZeroAvatarWidth) - crop_left));
   for (uint8_t row = 0; row < kZeroAvatarHeight; ++row) {
-    for (uint8_t col = 0; col < kZeroAvatarWidth; ++col) {
-      const uint16_t color = avatarColor(row, col, kZeroAvatar[row][col]);
+    for (int col = 0; col < visible_width; ++col) {
+      const uint16_t color = avatarColor(kZeroAvatar[row][crop_left + col]);
       if (scale == 1) {
         M5.Display.drawPixel(x + col, y + row, color);
       } else {
@@ -263,45 +273,136 @@ void drawZeroAvatar(int x, int y, uint8_t scale = 1) {
   }
 }
 
-void drawAvatarStatus(const char* line1, const char* line2 = "") {
+String fittedLine(const char* text, int max_width) {
+  String line(text != nullptr ? text : "");
+  if (M5.Display.textWidth(line.c_str()) <= max_width) {
+    return line;
+  }
+  while (line.length() > 0) {
+    line.remove(line.length() - 1);
+    const String candidate = line + "...";
+    if (M5.Display.textWidth(candidate.c_str()) <= max_width) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+void printFittedLine(const char* text, int x, int y, int max_width, bool bold = false) {
+  const String line = fittedLine(text, max_width);
+  M5.Display.setCursor(x, y);
+  M5.Display.print(line);
+  if (bold && line.length() > 0) {
+    M5.Display.setCursor(x + 1, y);
+    M5.Display.print(line);
+  }
+}
+
+void drawAvatarDialogue(const char* line1, const char* line2 = "") {
   M5.Display.setRotation(3);
   M5.Display.setBrightness(kScreenBrightness);
-  M5.Display.fillScreen(TFT_BLACK);
-  constexpr uint8_t kAvatarScale = 2;
-  constexpr int kRightPadding = 8;
-  const int avatar_w = static_cast<int>(kZeroAvatarWidth) * kAvatarScale;
-  const int avatar_h = static_cast<int>(kZeroAvatarHeight) * kAvatarScale;
-  const int avatar_x = M5.Display.width() - avatar_w - kRightPadding;
+  const uint16_t bg = avatarBackgroundColor();
+  const uint16_t border = dialogueBorderColor();
+  M5.Display.fillScreen(bg);
+  const int avatar_w = kZeroAvatarVisibleWidth * kZeroAvatarScale;
+  const int avatar_h = static_cast<int>(kZeroAvatarHeight) * kZeroAvatarScale;
+  const int avatar_x = M5.Display.width() - avatar_w - kZeroAvatarRightPadding;
   const int avatar_y = (M5.Display.height() - avatar_h) / 2;
-  drawZeroAvatar(avatar_x, avatar_y, kAvatarScale);
+  drawZeroAvatar(
+      avatar_x, avatar_y, kZeroAvatarScale, kZeroAvatarCropLeft, kZeroAvatarVisibleWidth);
 
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  const int bubble_x = kDialoguePadding;
+  const int bubble_y = kDialoguePadding;
+  const int bubble_w = std::max(58, avatar_x - kDialoguePadding - bubble_x);
+  const int bubble_h = M5.Display.height() - kDialoguePadding * 2;
+  const int tail_y = bubble_y + bubble_h / 2;
+  M5.Display.fillRoundRect(bubble_x, bubble_y, bubble_w, bubble_h, 7, TFT_WHITE);
+  M5.Display.drawRoundRect(bubble_x, bubble_y, bubble_w, bubble_h, 7, border);
+  M5.Display.drawRoundRect(bubble_x + 2, bubble_y + 2, bubble_w - 4, bubble_h - 4, 5, border);
+  M5.Display.fillTriangle(bubble_x + bubble_w - 1,
+                          tail_y - 7,
+                          avatar_x - 1,
+                          tail_y,
+                          bubble_x + bubble_w - 1,
+                          tail_y + 7,
+                          TFT_WHITE);
+  M5.Display.drawTriangle(bubble_x + bubble_w - 1,
+                          tail_y - 7,
+                          avatar_x - 1,
+                          tail_y,
+                          bubble_x + bubble_w - 1,
+                          tail_y + 7,
+                          border);
+
+  const int text_x = bubble_x + 10;
+  const int text_width = bubble_w - 20;
+  M5.Display.setTextColor(border, TFT_WHITE);
   M5.Display.setTextWrap(false);
   M5.Display.setFont(&fonts::Font2);
-  M5.Display.setCursor(8, 24);
-  M5.Display.print(line1 != nullptr ? line1 : "");
-  M5.Display.setFont(&fonts::Font0);
-  M5.Display.setCursor(8, 52);
-  M5.Display.print(line2 != nullptr ? line2 : "");
+  printFittedLine(line1, text_x, bubble_y + 12, text_width);
+  if (line2 != nullptr && line2[0] != '\0') {
+    M5.Display.setFont(&fonts::Font0);
+    printFittedLine(line2, text_x, bubble_y + 42, text_width);
+  }
+}
+
+void drawAvatarStatus(const char* line1, const char* line2 = "") {
+  drawAvatarDialogue(line1, line2);
 }
 
 void drawEmptyReadScreen() {
+  drawAvatarDialogue("no message");
+}
+
+void drawBootScreen() {
   M5.Display.setRotation(3);
   M5.Display.setBrightness(kScreenBrightness);
-  M5.Display.fillScreen(TFT_BLACK);
-  constexpr uint8_t kAvatarScale = 2;
-  constexpr int kRightPadding = 8;
-  const int avatar_w = static_cast<int>(kZeroAvatarWidth) * kAvatarScale;
-  const int avatar_h = static_cast<int>(kZeroAvatarHeight) * kAvatarScale;
-  const int avatar_x = M5.Display.width() - avatar_w - kRightPadding;
+  const uint16_t bg = avatarBackgroundColor();
+  const uint16_t border = dialogueBorderColor();
+  M5.Display.fillScreen(bg);
+
+  constexpr uint8_t kBootAvatarScale = 1;
+  const int avatar_w = kZeroAvatarVisibleWidth * kBootAvatarScale;
+  const int avatar_h = static_cast<int>(kZeroAvatarHeight) * kBootAvatarScale;
+  const int avatar_x = M5.Display.width() - avatar_w - kZeroAvatarRightPadding;
   const int avatar_y = (M5.Display.height() - avatar_h) / 2;
-  drawZeroAvatar(avatar_x, avatar_y, kAvatarScale);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  drawZeroAvatar(avatar_x,
+                 avatar_y,
+                 kBootAvatarScale,
+                 kZeroAvatarCropLeft,
+                 kZeroAvatarVisibleWidth);
+
+  const int bubble_x = kDialoguePadding;
+  const int bubble_y = kDialoguePadding;
+  const int bubble_w = std::max(58, avatar_x - kDialoguePadding - bubble_x);
+  const int bubble_h = M5.Display.height() - kDialoguePadding * 2;
+  const int tail_y = bubble_y + bubble_h / 2;
+  M5.Display.fillRoundRect(bubble_x, bubble_y, bubble_w, bubble_h, 7, TFT_WHITE);
+  M5.Display.drawRoundRect(bubble_x, bubble_y, bubble_w, bubble_h, 7, border);
+  M5.Display.drawRoundRect(bubble_x + 2, bubble_y + 2, bubble_w - 4, bubble_h - 4, 5, border);
+  M5.Display.fillTriangle(bubble_x + bubble_w - 1,
+                          tail_y - 7,
+                          avatar_x - 1,
+                          tail_y,
+                          bubble_x + bubble_w - 1,
+                          tail_y + 7,
+                          TFT_WHITE);
+  M5.Display.drawTriangle(bubble_x + bubble_w - 1,
+                          tail_y - 7,
+                          avatar_x - 1,
+                          tail_y,
+                          bubble_x + bubble_w - 1,
+                          tail_y + 7,
+                          border);
+
+  const int text_x = bubble_x + 7;
+  const int text_width = bubble_w - 14;
+  M5.Display.setTextColor(border, TFT_WHITE);
   M5.Display.setTextWrap(false);
+  M5.Display.setFont(&fonts::Font4);
+  printFittedLine("Zero", text_x, bubble_y + 18, text_width, true);
   M5.Display.setFont(&fonts::Font0);
-  const int text_x = std::max(0, (M5.Display.width() - M5.Display.textWidth("no message")) / 2);
-  M5.Display.setCursor(text_x, M5.Display.height() - 18);
-  M5.Display.print("no message");
+  printFittedLine("your trustworthy AI teammate", text_x, bubble_y + 72, text_width);
 }
 
 size_t utf8DisplayWidthPx(const std::string& text, size_t* offset) {
@@ -565,22 +666,53 @@ bool configLooksPlaceholder(const char* value) {
   return value == nullptr || value[0] == '\0' || strstr(value, "your-") == value;
 }
 
+enum class ButtonPressIntent {
+  None,
+  ShortPress,
+  LongPress,
+};
+
 class ButtonAbortDetector {
  public:
   bool shouldAbort() {
-    if (!buttonADown()) {
-      down_since_ms_ = 0;
-      return false;
+    return intent() != ButtonPressIntent::None;
+  }
+
+  ButtonPressIntent intent() {
+    if (latched_intent_ != ButtonPressIntent::None) {
+      return latched_intent_;
     }
+
     const uint32_t now = millis();
-    if (down_since_ms_ == 0) {
-      down_since_ms_ = now == 0 ? 1 : now;
+    if (buttonADown()) {
+      if (down_since_ms_ == 0) {
+        down_since_ms_ = now == 0 ? 1 : now;
+      }
+      if (now - down_since_ms_ >= kLongPressMs) {
+        latched_intent_ = ButtonPressIntent::LongPress;
+      }
+    } else if (down_since_ms_ != 0) {
+      latched_intent_ = ButtonPressIntent::ShortPress;
+      down_since_ms_ = 0;
     }
-    return now - down_since_ms_ >= kLongPressMs;
+    return latched_intent_;
+  }
+
+  const char* abortReason() {
+    switch (intent()) {
+      case ButtonPressIntent::ShortPress:
+        return "btn_a_short_press";
+      case ButtonPressIntent::LongPress:
+        return "btn_a_long_press";
+      case ButtonPressIntent::None:
+        break;
+    }
+    return nullptr;
   }
 
  private:
   uint32_t down_since_ms_ = 0;
+  ButtonPressIntent latched_intent_ = ButtonPressIntent::None;
 };
 
 bool connectWifi(ButtonAbortDetector* abort_detector) {
@@ -599,10 +731,11 @@ bool connectWifi(ButtonAbortDetector* abort_detector) {
     WiFi.begin(cred.ssid, cred.password);
     const uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiConnectAttemptMs) {
+      M5.update();
       if (abort_detector != nullptr && abort_detector->shouldAbort()) {
         return false;
       }
-      delay(100);
+      delay(20);
     }
     if (WiFi.status() == WL_CONNECTED) {
       return true;
@@ -915,7 +1048,7 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
 
   bool ensureWifiConnected() override {
     const bool ok = connectWifi(&abort_detector_);
-    abortIfButtonHeld();
+    abortForButtonIntent();
     return ok && !isAborted();
   }
 
@@ -931,10 +1064,10 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
     }
     String body;
     if (!httpGet(url, &body, &abort_detector_)) {
-      abortIfButtonHeld();
+      abortForButtonIntent();
       return false;
     }
-    abortIfButtonHeld();
+    abortForButtonIntent();
     if (isAborted()) {
       return false;
     }
@@ -989,9 +1122,9 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
     return mode_ != nullptr && mode_->abortRequested();
   }
 
-  void abortIfButtonHeld() {
+  void abortForButtonIntent() {
     if (mode_ != nullptr && abort_detector_.shouldAbort()) {
-      mode_->abort("btn_a_long_press");
+      mode_->abort(abort_detector_.abortReason());
     }
   }
 
@@ -1056,7 +1189,8 @@ class HardwareReadOps : public ReadOps {
 
   size_t maxScrollTopForMessage(const std::string& message) override {
     const size_t width = static_cast<size_t>(
-        std::max(1, M5.Display.width() - static_cast<int>(kReadHorizontalPadding * 2)));
+        std::max(1, M5.Display.width() -
+                        static_cast<int>(kReadPaddingLeft + kReadPaddingRight)));
     const size_t viewport = readViewportHeight();
     const size_t text_height = estimateWrappedTextHeight(message, width);
     if (text_height <= viewport) {
@@ -1094,25 +1228,40 @@ class HardwareReadOps : public ReadOps {
                               size_t scroll_top) override {
     M5.Display.setRotation(3);
     M5.Display.setBrightness(kScreenBrightness);
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    const uint16_t bg = avatarBackgroundColor();
+    const uint16_t fg = dialogueBorderColor();
+    M5.Display.fillScreen(bg);
+    M5.Display.setTextColor(fg, bg);
     M5.Display.setTextWrap(false);
     M5.Display.setFont(&fonts::Font0);
-    M5.Display.setCursor(4, 4);
+    M5.Display.setCursor(kReadPaddingLeft, kReadPaddingTop);
     M5.Display.print(String(static_cast<unsigned>(index + 1)) + "/" +
                      String(static_cast<unsigned>(count)));
-    M5.Display.drawFastHLine(0, kReadHeaderHeight, M5.Display.width(), TFT_DARKGREY);
+    const int divider_y = static_cast<int>(kReadPaddingTop + kReadHeaderHeight);
+    M5.Display.drawFastHLine(kReadPaddingLeft,
+                             divider_y,
+                             M5.Display.width() - kReadPaddingLeft - kReadPaddingRight,
+                             fg);
 
-    const int body_y = static_cast<int>(kReadHeaderHeight + 3);
-    const int body_h = std::max(1, M5.Display.height() - body_y);
-    M5.Display.setClipRect(0, body_y, M5.Display.width(), body_h);
+    const int body_y = readBodyTop();
+    const int body_h = static_cast<int>(readViewportHeight());
+    M5.Display.setClipRect(kReadPaddingLeft,
+                           body_y,
+                           M5.Display.width() - kReadPaddingLeft - kReadPaddingRight,
+                           body_h);
     M5.Display.setTextWrap(true);
     M5.Display.setFont(&fonts::efontCN_12);
-    M5.Display.setCursor(kReadHorizontalPadding,
+    M5.Display.setCursor(kReadPaddingLeft,
                          body_y - static_cast<int>(scroll_top));
     M5.Display.print(message.c_str());
     M5.Display.clearClipRect();
     M5.Display.setTextWrap(false);
+
+    const bool has_next_page =
+        scroll_top < maxScrollTopForMessage(message) || index + 1 < count;
+    if (has_next_page) {
+      drawNextPageArrow();
+    }
   }
 
   ReadInput waitForInput(uint32_t timeout_ms) override {
@@ -1141,9 +1290,28 @@ class HardwareReadOps : public ReadOps {
   void closeFiles() override {}
 
  private:
+  int readBodyTop() const {
+    return static_cast<int>(kReadPaddingTop + kReadHeaderHeight + 4);
+  }
+
   size_t readViewportHeight() const {
-    const int body_y = static_cast<int>(kReadHeaderHeight + 3);
-    return static_cast<size_t>(std::max(1, M5.Display.height() - body_y));
+    return static_cast<size_t>(
+        std::max(1, M5.Display.height() - readBodyTop() -
+                    static_cast<int>(kReadPaddingBottom)));
+  }
+
+  void drawNextPageArrow() {
+    const int right = M5.Display.width() - kReadPaddingRight - 1;
+    const int bottom = M5.Display.height() - kReadPaddingBottom - 1;
+    const int cx = right - 6;
+    const int cy = bottom - 5;
+    M5.Display.fillTriangle(cx - 5,
+                            cy - 2,
+                            cx + 5,
+                            cy - 2,
+                            cx,
+                            cy + 5,
+                            dialogueBorderColor());
   }
 };
 
@@ -1155,14 +1323,30 @@ class HardwareRecordingOps : public RecordingOps {
     drawAvatarStatus("recording", "hold BtnA");
   }
 
-  void showFailure(const ModeRunResult& result) {
+  void showResult(const ModeRunResult& result) {
+    if (result.status == ModeRunStatus::Completed) {
+      drawAvatarStatus("sent", "message sent");
+      Serial.println("recording completed");
+      Serial.flush();
+      delay(5000);
+      return;
+    }
+    if (result.status == ModeRunStatus::Aborted) {
+      drawAvatarStatus("aborted", "recording");
+      Serial.print("recording aborted: ");
+      Serial.println("abort");
+      Serial.flush();
+      delay(5000);
+      return;
+    }
+
     const char* error = modeRunErrorName(result.error);
     String detail(error);
     if (recording_failure_detail_ != nullptr && recording_failure_detail_[0] != '\0') {
       detail += ":";
       detail += recording_failure_detail_;
     }
-    drawStatus("recording failed", detail.c_str());
+    drawAvatarStatus("failed", detail.c_str());
     Serial.print("recording failed: ");
     Serial.println(error);
     if (recording_failure_detail_ != nullptr && recording_failure_detail_[0] != '\0') {
@@ -1170,7 +1354,7 @@ class HardwareRecordingOps : public RecordingOps {
       Serial.println(recording_failure_detail_);
     }
     Serial.flush();
-    delay(8000);
+    delay(5000);
   }
 
   void setCpuForRecording() override {
@@ -1315,14 +1499,16 @@ class HardwareRecordingOps : public RecordingOps {
   const char* recording_failure_detail_ = "";
 };
 
+void enterDeepSleep();
+void runReadThenSleep();
+void runRecordingOnce();
+
 void runRecordingOnce() {
   zero_buddy::state::setMode(&g_state, zero_buddy::state::Mode::Recording);
   HardwareRecordingOps ops;
   RecordingMode mode(&g_state, &ops);
   const auto result = mode.main();
-  if (result.status == ModeRunStatus::Failed) {
-    ops.showFailure(result);
-  }
+  ops.showResult(result);
 }
 
 void enterDeepSleep() {
@@ -1339,6 +1525,11 @@ void runCheckAssistantThenSleep() {
   ops.setMode(&mode);
   const auto result = mode.main();
   if (result.status == ModeRunStatus::Aborted && mode.abortRequested()) {
+    const char* reason = mode.abortReason();
+    if (reason != nullptr && strcmp(reason, "btn_a_short_press") == 0) {
+      runReadThenSleep();
+      return;
+    }
     runRecordingOnce();
   }
   enterDeepSleep();
@@ -1381,6 +1572,11 @@ void setup() {
   zero_buddy::state::setHasAssistantMessage(&g_state, assistant_message_exists());
 
   const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
+  if (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+    drawBootScreen();
+    delay(kBootSplashMs);
+  }
+
   if (wake_cause == ESP_SLEEP_WAKEUP_TIMER) {
     runCheckAssistantThenSleep();
     return;

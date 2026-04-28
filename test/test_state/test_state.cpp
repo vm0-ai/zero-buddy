@@ -223,6 +223,11 @@ void test_state_transitions() {
   TEST_ASSERT_TRUE(zero_buddy::state::applyTransition(&state, transition));
   assertMode(Mode::CheckAssistantMessage, state.currentMode);
 
+  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::BtnAShortPress);
+  TEST_ASSERT_TRUE(transition.valid);
+  TEST_ASSERT_TRUE(transition.requiresAbort);
+  assertMode(Mode::Read, transition.nextMode);
+
   transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::BtnALongPress);
   TEST_ASSERT_TRUE(transition.valid);
   TEST_ASSERT_TRUE(transition.requiresAbort);

@@ -220,6 +220,52 @@ void test_power_window_state_machine() {
   TEST_ASSERT_FALSE(state.screen_awake);
 }
 
+void test_boot_repair_actions() {
+  auto action =
+      zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::WifiUnavailable);
+  TEST_ASSERT_TRUE(action.reprovision_wifi);
+  TEST_ASSERT_FALSE(action.clear_auth_token);
+  TEST_ASSERT_FALSE(action.clear_thread_id);
+
+  action = zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::MessageReadFailed);
+  TEST_ASSERT_FALSE(action.reprovision_wifi);
+  TEST_ASSERT_FALSE(action.clear_auth_token);
+  TEST_ASSERT_TRUE(action.clear_thread_id);
+
+  action =
+      zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::ThreadCreateFailed);
+  TEST_ASSERT_FALSE(action.reprovision_wifi);
+  TEST_ASSERT_TRUE(action.clear_auth_token);
+  TEST_ASSERT_TRUE(action.clear_thread_id);
+}
+
+void test_provisioning_service_data_encoding() {
+  const auto data = zero_buddy::buildProvisioningServiceData(
+      zero_buddy::ProvisioningState::DeviceCodeReady,
+      0x05,
+      0xF1B4,
+      zero_buddy::ProvisioningError::None);
+  const uint8_t expected[] = {
+      1,
+      static_cast<uint8_t>(zero_buddy::ProvisioningState::DeviceCodeReady),
+      0x05,
+      0xB4,
+      0xF1,
+      static_cast<uint8_t>(zero_buddy::ProvisioningError::None),
+  };
+  TEST_ASSERT_EQUAL_UINT(sizeof(expected), data.size());
+  TEST_ASSERT_EQUAL_MEMORY(expected, data.data(), sizeof(expected));
+  TEST_ASSERT_EQUAL_STRING(
+      "device_code_ready",
+      zero_buddy::provisioningStateName(zero_buddy::ProvisioningState::DeviceCodeReady));
+  TEST_ASSERT_EQUAL_STRING(
+      "network_failed",
+      zero_buddy::provisioningErrorCodeName(zero_buddy::ProvisioningError::NetworkFailed));
+  TEST_ASSERT_EQUAL_STRING(
+      "",
+      zero_buddy::provisioningErrorCodeName(zero_buddy::ProvisioningError::None));
+}
+
 void test_assistant_queue_manifest_round_trip() {
   const auto json =
       zero_buddy::buildAssistantQueueManifest(3, 1, true, 2, "msg-1\\quoted", 120);
@@ -405,6 +451,8 @@ int main() {
   RUN_TEST(test_battery_fill_pixels);
   RUN_TEST(test_external_power_present_prefers_vbus_over_charge_current);
   RUN_TEST(test_power_window_state_machine);
+  RUN_TEST(test_boot_repair_actions);
+  RUN_TEST(test_provisioning_service_data_encoding);
   RUN_TEST(test_assistant_queue_manifest_round_trip);
   RUN_TEST(test_buddy_home_state_events);
   RUN_TEST(test_buddy_recording_state_events);

@@ -15,7 +15,7 @@ constexpr uint8_t kReadPaddingRight = 8;
 constexpr uint8_t kReadPaddingLeft = kReadPaddingRight + 2;
 constexpr uint8_t kReadPaddingBottom = 8;
 constexpr uint8_t kReadHeaderHeight = 14;
-constexpr uint8_t kReadLineHeight = 16;
+constexpr uint8_t kReadLineHeight = 18;
 constexpr uint8_t kZeroAvatarWidth = 80;
 constexpr uint8_t kZeroAvatarHeight = 45;
 constexpr uint8_t kZeroAvatarScale = 2;
@@ -25,6 +25,55 @@ constexpr int kZeroAvatarVisibleWidth =
     kZeroAvatarWidth - kZeroAvatarCropLeft - kZeroAvatarCropRight;
 constexpr int kZeroAvatarRightPadding = 8;
 constexpr int kDialoguePadding = 5;
+constexpr int kTinyFontGlyphWidth = 5;
+constexpr int kTinyFontGlyphHeight = 7;
+constexpr int kTinyFontScale = 3;
+constexpr int kTinyFontSpacing = 1;
+
+struct TinyFontGlyph {
+  char ch;
+  uint8_t columns[kTinyFontGlyphWidth];
+};
+
+constexpr TinyFontGlyph kTinyFont[] = {
+    {'0', {0x3E, 0x49, 0x49, 0x49, 0x3E}},
+    {'1', {0x00, 0x42, 0x7F, 0x40, 0x00}},
+    {'2', {0x62, 0x51, 0x49, 0x49, 0x46}},
+    {'3', {0x22, 0x41, 0x49, 0x49, 0x36}},
+    {'4', {0x18, 0x14, 0x12, 0x7F, 0x10}},
+    {'5', {0x2F, 0x49, 0x49, 0x49, 0x31}},
+    {'6', {0x3E, 0x49, 0x49, 0x49, 0x32}},
+    {'7', {0x01, 0x71, 0x09, 0x05, 0x03}},
+    {'8', {0x36, 0x49, 0x49, 0x49, 0x36}},
+    {'9', {0x26, 0x49, 0x49, 0x49, 0x3E}},
+    {'.', {0x00, 0x60, 0x60, 0x00, 0x00}},
+    {'a', {0x20, 0x54, 0x54, 0x54, 0x78}},
+    {'b', {0x7F, 0x48, 0x44, 0x44, 0x38}},
+    {'c', {0x38, 0x44, 0x44, 0x44, 0x28}},
+    {'d', {0x38, 0x44, 0x44, 0x48, 0x7F}},
+    {'e', {0x38, 0x54, 0x54, 0x54, 0x18}},
+    {'f', {0x08, 0x7E, 0x09, 0x01, 0x02}},
+    {'g', {0x18, 0x54, 0x54, 0x54, 0x3C}},
+    {'h', {0x7F, 0x08, 0x04, 0x04, 0x78}},
+    {'i', {0x00, 0x44, 0x7D, 0x40, 0x00}},
+    {'j', {0x20, 0x40, 0x44, 0x3D, 0x00}},
+    {'k', {0x7F, 0x10, 0x28, 0x44, 0x00}},
+    {'l', {0x00, 0x41, 0x7F, 0x40, 0x00}},
+    {'m', {0x7C, 0x04, 0x78, 0x04, 0x78}},
+    {'n', {0x7C, 0x08, 0x04, 0x04, 0x78}},
+    {'o', {0x38, 0x44, 0x44, 0x44, 0x38}},
+    {'p', {0x7C, 0x24, 0x24, 0x24, 0x18}},
+    {'q', {0x18, 0x24, 0x24, 0x28, 0x7C}},
+    {'r', {0x7C, 0x08, 0x04, 0x04, 0x08}},
+    {'s', {0x48, 0x54, 0x54, 0x54, 0x24}},
+    {'t', {0x04, 0x3F, 0x44, 0x40, 0x20}},
+    {'u', {0x3C, 0x40, 0x40, 0x20, 0x7C}},
+    {'v', {0x1C, 0x20, 0x40, 0x20, 0x1C}},
+    {'w', {0x3C, 0x40, 0x30, 0x40, 0x3C}},
+    {'x', {0x44, 0x28, 0x10, 0x28, 0x44}},
+    {'y', {0x0C, 0x50, 0x50, 0x50, 0x3C}},
+    {'z', {0x44, 0x64, 0x54, 0x4C, 0x44}},
+};
 
 constexpr char kZeroAvatar[kZeroAvatarHeight][kZeroAvatarWidth + 1] = {
     "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
@@ -99,6 +148,61 @@ void printFittedLine(const char* text, int x, int y, int max_width, bool bold = 
   }
 }
 
+const uint8_t* tinyFontGlyphFor(char ch) {
+  if (ch >= 'A' && ch <= 'Z') {
+    ch = static_cast<char>(ch - 'A' + 'a');
+  }
+  for (const auto& glyph : kTinyFont) {
+    if (glyph.ch == ch) {
+      return glyph.columns;
+    }
+  }
+  return nullptr;
+}
+
+int tinyFontTextWidth(const char* text, int scale, int spacing) {
+  if (text == nullptr || text[0] == '\0') {
+    return 0;
+  }
+  int width = 0;
+  for (size_t i = 0; text[i] != '\0'; ++i) {
+    width += (text[i] == ' ' ? 3 : kTinyFontGlyphWidth) * scale;
+    if (text[i + 1] != '\0') {
+      width += spacing * scale;
+    }
+  }
+  return width;
+}
+
+void drawTinyFontText(const char* text,
+                      int x,
+                      int y,
+                      int scale,
+                      int spacing,
+                      uint16_t color) {
+  if (text == nullptr) {
+    return;
+  }
+  int cursor_x = x;
+  for (size_t i = 0; text[i] != '\0'; ++i) {
+    const uint8_t* columns = tinyFontGlyphFor(text[i]);
+    if (columns != nullptr) {
+      for (int col = 0; col < kTinyFontGlyphWidth; ++col) {
+        for (int row = 0; row < kTinyFontGlyphHeight; ++row) {
+          if ((columns[col] & (1U << row)) != 0) {
+            M5.Display.fillRect(cursor_x + col * scale,
+                                y + row * scale,
+                                scale,
+                                scale,
+                                color);
+          }
+        }
+      }
+    }
+    cursor_x += ((text[i] == ' ' ? 3 : kTinyFontGlyphWidth) + spacing) * scale;
+  }
+}
+
 }  // namespace
 
 ScreenRenderer::ScreenRenderer(state::GlobalState* shared_state)
@@ -120,15 +224,11 @@ void ScreenRenderer::screenOff() {
 }
 
 void ScreenRenderer::render_screen_boot() {
-  state::RenderScreenState next;
-  next.kind = state::RenderScreenKind::Boot;
-  if (sameRenderState(next)) {
-    render_element_battery_level();
-    return;
-  }
-  commitRenderState(next);
-  resetElementState();
-  render_avatar_dialogue_body("Zero", "your trustworthy AI teammate", true, 1);
+  render_screen_avatar_dialogue(state::RenderScreenKind::Boot,
+                                "Zero",
+                                "your trustworthy AI teammate",
+                                true,
+                                kZeroAvatarScale);
 }
 
 void ScreenRenderer::render_screen_read_empty() {
@@ -218,6 +318,110 @@ void ScreenRenderer::render_screen_recording_aborted() {
 
 void ScreenRenderer::render_screen_recording_failed(const char* detail) {
   render_screen_avatar_dialogue(state::RenderScreenKind::RecordingFailed, "failed", detail);
+}
+
+void ScreenRenderer::render_screen_setup_wifi(const char* device_name, const char* setup_url) {
+  (void)device_name;
+  (void)setup_url;
+  state::RenderScreenState next;
+  next.kind = state::RenderScreenKind::SetupWifi;
+  next.value1 = hashText("visit");
+  next.value2 = hashText("bb0.ai");
+  next.value3 = hashText("in Google Chrome");
+  next.value4 = kZeroAvatarScale;
+  const state::RenderScreenState previous = currentRenderState();
+  if (sameRenderState(next)) {
+    render_element_battery_level();
+    return;
+  }
+  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
+  commitRenderState(next);
+  if (!reuse_shell) {
+    resetElementState();
+  }
+
+  const AvatarDialogueLayout layout =
+      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
+  render_element_setup_wifi_text(layout.bubble_x,
+                                 layout.bubble_y,
+                                 layout.bubble_w,
+                                 layout.bubble_h);
+  render_element_battery_level();
+}
+
+void ScreenRenderer::render_screen_setup_device_code(const char* device_code,
+                                                     uint32_t seconds_left) {
+  state::RenderScreenState next;
+  next.kind = state::RenderScreenKind::SetupDeviceCode;
+  next.value1 = hashText(device_code);
+  next.value2 = seconds_left;
+  next.value4 = kZeroAvatarScale;
+
+  const state::RenderScreenState previous = currentRenderState();
+  if (state::sameRenderScreenState(previous, next)) {
+    render_element_battery_level();
+    return;
+  }
+
+  const bool countdown_only =
+      previous.kind == state::RenderScreenKind::SetupDeviceCode &&
+      previous.value1 == next.value1 &&
+      previous.value4 == next.value4;
+  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
+  commitRenderState(next);
+
+  screenOn();
+  const AvatarDialogueLayout layout = avatarDialogueLayout(kZeroAvatarScale);
+  if (countdown_only) {
+    render_element_setup_device_code_countdown(seconds_left,
+                                               layout.bubble_x,
+                                               layout.bubble_y,
+                                               layout.bubble_w,
+                                               layout.bubble_h);
+    render_element_battery_level();
+    return;
+  }
+
+  if (!reuse_shell) {
+    resetElementState();
+  }
+  const AvatarDialogueLayout drawn_layout =
+      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
+  render_element_setup_device_code_text(device_code,
+                                        seconds_left,
+                                        drawn_layout.bubble_x,
+                                        drawn_layout.bubble_y,
+                                        drawn_layout.bubble_w,
+                                        drawn_layout.bubble_h);
+  render_element_battery_level();
+}
+
+void ScreenRenderer::render_screen_setup_status(const char* line1, const char* line2) {
+  state::RenderScreenState next;
+  next.kind = state::RenderScreenKind::SetupStatus;
+  next.value1 = hashText(line1);
+  next.value2 = hashText(line2);
+  next.value4 = kZeroAvatarScale;
+  const state::RenderScreenState previous = currentRenderState();
+  if (sameRenderState(next)) {
+    render_element_battery_level();
+    return;
+  }
+  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
+  commitRenderState(next);
+  if (!reuse_shell) {
+    resetElementState();
+  }
+
+  const AvatarDialogueLayout layout =
+      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
+  render_element_setup_status_text(line1,
+                                   line2,
+                                   layout.bubble_x,
+                                   layout.bubble_y,
+                                   layout.bubble_w,
+                                   layout.bubble_h);
+  render_element_battery_level();
 }
 
 void ScreenRenderer::render_element_battery_level() {
@@ -331,6 +535,114 @@ void ScreenRenderer::render_element_bubble_text(const char* line1,
   }
 }
 
+void ScreenRenderer::render_element_setup_status_text(const char* line1,
+                                                      const char* line2,
+                                                      int bubble_x,
+                                                      int bubble_y,
+                                                      int bubble_w,
+                                                      int bubble_h) {
+  const uint16_t border = dialogueBorderColor();
+  M5.Display.setTextColor(border, TFT_WHITE);
+  M5.Display.setTextWrap(false);
+
+  const int text_x = bubble_x + 10;
+  const int text_w = bubble_w - 20;
+  const int block_h = (line2 != nullptr && line2[0] != '\0') ? 54 : 28;
+  const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
+  M5.Display.setFont(&fonts::Font2);
+  printFittedLine(line1, text_x, block_y, text_w, true);
+  if (line2 != nullptr && line2[0] != '\0') {
+    M5.Display.setFont(&fonts::Font0);
+    printFittedLine(line2, text_x, block_y + 38, text_w);
+  }
+}
+
+void ScreenRenderer::render_element_setup_wifi_text(int bubble_x,
+                                                    int bubble_y,
+                                                    int bubble_w,
+                                                    int bubble_h) {
+  const uint16_t border = dialogueBorderColor();
+  M5.Display.setTextColor(border, TFT_WHITE);
+  M5.Display.setTextWrap(false);
+
+  auto printCentered = [&](const char* text, int y, bool bold) {
+    const int width = bubble_w - 18;
+    const int x = bubble_x + 9 + std::max(0, (width - M5.Display.textWidth(text)) / 2);
+    M5.Display.setCursor(x, y);
+    M5.Display.print(text);
+    if (bold) {
+      M5.Display.setCursor(x + 1, y);
+      M5.Display.print(text);
+    }
+  };
+
+  auto printCenteredTiny = [&](const char* text, int y) {
+    const int width = bubble_w - 18;
+    const int text_width = tinyFontTextWidth(text, kTinyFontScale, kTinyFontSpacing);
+    const int x = bubble_x + 9 + std::max(0, (width - text_width) / 2);
+    drawTinyFontText(text, x, y, kTinyFontScale, kTinyFontSpacing, border);
+  };
+
+  constexpr int kBlockHeight = 88;
+  const int block_y = bubble_y + std::max(0, (bubble_h - kBlockHeight) / 2);
+  M5.Display.setFont(&fonts::Font2);
+  printCentered("visit", block_y, false);
+  printCenteredTiny("bb0.ai", block_y + 30);
+  M5.Display.setFont(&fonts::Font2);
+  printCentered("in Google Chrome", block_y + 72, false);
+}
+
+void ScreenRenderer::render_element_setup_device_code_text(const char* device_code,
+                                                           uint32_t seconds_left,
+                                                           int bubble_x,
+                                                           int bubble_y,
+                                                           int bubble_w,
+                                                           int bubble_h) {
+  const uint16_t border = dialogueBorderColor();
+  M5.Display.setTextColor(border, TFT_WHITE);
+  M5.Display.setTextWrap(false);
+
+  const int text_x = bubble_x + 10;
+  const int text_w = bubble_w - 20;
+  const int block_h = 94;
+  const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
+
+  M5.Display.setFont(&fonts::Font2);
+  printFittedLine("Device Code", text_x, block_y, text_w, true);
+  M5.Display.setFont(&fonts::Font2);
+  printFittedLine(device_code, text_x, block_y + 30, text_w, true);
+  M5.Display.setFont(&fonts::Font0);
+  printFittedLine("confirm on bb0.ai", text_x, block_y + 60, text_w);
+  render_element_setup_device_code_countdown(
+      seconds_left, bubble_x, bubble_y, bubble_w, bubble_h);
+}
+
+void ScreenRenderer::render_element_setup_device_code_countdown(uint32_t seconds_left,
+                                                                int bubble_x,
+                                                                int bubble_y,
+                                                                int bubble_w,
+                                                                int bubble_h) {
+  char countdown[24] = {0};
+  snprintf(countdown,
+           sizeof(countdown),
+           "expires %u:%02u",
+           static_cast<unsigned>(seconds_left / 60),
+           static_cast<unsigned>(seconds_left % 60));
+
+  const uint16_t border = dialogueBorderColor();
+  M5.Display.setTextColor(border, TFT_WHITE);
+  M5.Display.setTextWrap(false);
+  M5.Display.setFont(&fonts::Font0);
+
+  const int text_x = bubble_x + 10;
+  const int text_w = bubble_w - 20;
+  const int block_h = 94;
+  const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
+  const int countdown_y = block_y + 80;
+  M5.Display.fillRect(text_x, countdown_y, text_w, 12, TFT_WHITE);
+  printFittedLine(countdown, text_x, countdown_y, text_w);
+}
+
 void ScreenRenderer::render_element_chat_header(size_t index, size_t count) {
   const uint16_t fg = dialogueBorderColor();
   M5.Display.setTextColor(fg, avatarBackgroundColor());
@@ -356,10 +668,8 @@ void ScreenRenderer::render_element_chat_message(const std::string& message,
   M5.Display.fillRect(kReadPaddingLeft, body_y, body_w, body_h, bg);
   M5.Display.setClipRect(kReadPaddingLeft, body_y, body_w, body_h);
   M5.Display.setTextColor(fg, bg);
-  M5.Display.setTextWrap(true);
   M5.Display.setFont(&fonts::efontCN_12);
-  M5.Display.setCursor(kReadPaddingLeft, body_y - static_cast<int>(scroll_top));
-  M5.Display.print(message.c_str());
+  renderWrappedChatText(message, kReadPaddingLeft, body_y, body_w, scroll_top);
   M5.Display.clearClipRect();
   M5.Display.setTextWrap(false);
 }
@@ -450,45 +760,127 @@ void ScreenRenderer::resetElementState() {
 
 void ScreenRenderer::render_screen_avatar_dialogue(state::RenderScreenKind kind,
                                                    const char* line1,
-                                                   const char* line2) {
+                                                   const char* line2,
+                                                   bool large_title,
+                                                   uint8_t avatar_scale) {
   state::RenderScreenState next;
   next.kind = kind;
   next.value1 = hashText(line1);
   next.value2 = hashText(line2);
+  next.value3 = large_title ? 1 : 0;
+  next.value4 = avatar_scale;
   if (sameRenderState(next)) {
     render_element_battery_level();
     return;
   }
+  const state::RenderScreenState previous = currentRenderState();
+  const bool reuse_shell = canReuseAvatarDialogueShell(previous, avatar_scale);
   commitRenderState(next);
-  resetElementState();
-  render_avatar_dialogue_body(line1, line2, false, kZeroAvatarScale);
+  if (!reuse_shell) {
+    resetElementState();
+  }
+  render_avatar_dialogue_body(line1, line2, large_title, avatar_scale, reuse_shell);
 }
 
 void ScreenRenderer::render_avatar_dialogue_body(const char* line1,
                                                  const char* line2,
                                                  bool large_title,
-                                                 uint8_t avatar_scale) {
-  screenOn();
-  const uint16_t bg = avatarBackgroundColor();
-  M5.Display.fillScreen(bg);
+                                                 uint8_t avatar_scale,
+                                                 bool reuse_shell) {
+  const AvatarDialogueLayout layout =
+      render_avatar_dialogue_shell(avatar_scale, reuse_shell);
+
+  const int text_x = layout.bubble_x + (large_title ? 7 : 10);
+  const int text_width = layout.bubble_w - (large_title ? 14 : 20);
+  render_element_bubble_text(line1,
+                             line2,
+                             text_x,
+                             layout.bubble_y + 5,
+                             text_width,
+                             large_title);
+  render_element_battery_level();
+}
+
+bool ScreenRenderer::isAvatarDialogueScreenKind(state::RenderScreenKind kind) const {
+  switch (kind) {
+    case state::RenderScreenKind::Boot:
+    case state::RenderScreenKind::ReadEmpty:
+    case state::RenderScreenKind::RecordingPrompt:
+    case state::RenderScreenKind::RecordingActive:
+    case state::RenderScreenKind::RecordingWifi:
+    case state::RenderScreenKind::RecordingTranscribing:
+    case state::RenderScreenKind::RecordingSending:
+    case state::RenderScreenKind::RecordingSent:
+    case state::RenderScreenKind::RecordingAborted:
+    case state::RenderScreenKind::RecordingFailed:
+    case state::RenderScreenKind::SetupWifi:
+    case state::RenderScreenKind::SetupDeviceCode:
+    case state::RenderScreenKind::SetupStatus:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool ScreenRenderer::canReuseAvatarDialogueShell(
+    const state::RenderScreenState& previous,
+    uint8_t avatar_scale) const {
+  return isAvatarDialogueScreenKind(previous.kind) &&
+         previous.value4 == static_cast<uint32_t>(avatar_scale);
+}
+
+ScreenRenderer::AvatarDialogueLayout ScreenRenderer::avatarDialogueLayout(
+    uint8_t avatar_scale) const {
+  avatar_scale = std::max<uint8_t>(1, avatar_scale);
+  AvatarDialogueLayout layout;
   const int avatar_w = kZeroAvatarVisibleWidth * avatar_scale;
   const int avatar_h = static_cast<int>(kZeroAvatarHeight) * avatar_scale;
-  const int avatar_x = M5.Display.width() - avatar_w - kZeroAvatarRightPadding;
-  const int avatar_y = (M5.Display.height() - avatar_h) / 2;
-  render_element_zero_avatar(
-      avatar_x, avatar_y, avatar_scale, kZeroAvatarCropLeft, kZeroAvatarVisibleWidth);
+  layout.avatar_x = M5.Display.width() - avatar_w - kZeroAvatarRightPadding;
+  layout.avatar_y = (M5.Display.height() - avatar_h) / 2;
+  layout.bubble_x = kDialoguePadding;
+  layout.bubble_y = kDialoguePadding;
+  layout.bubble_w = std::max(58, layout.avatar_x - kDialoguePadding - layout.bubble_x);
+  layout.bubble_h = M5.Display.height() - kDialoguePadding * 2;
+  layout.tail_y = layout.bubble_y + layout.bubble_h / 2;
+  return layout;
+}
 
-  const int bubble_x = kDialoguePadding;
-  const int bubble_y = kDialoguePadding;
-  const int bubble_w = std::max(58, avatar_x - kDialoguePadding - bubble_x);
-  const int bubble_h = M5.Display.height() - kDialoguePadding * 2;
-  const int tail_y = bubble_y + bubble_h / 2;
-  render_element_dialogue_bubble(bubble_x, bubble_y, bubble_w, bubble_h, avatar_x - 1, tail_y);
+ScreenRenderer::AvatarDialogueLayout ScreenRenderer::render_avatar_dialogue_shell(
+    uint8_t avatar_scale,
+    bool reuse_shell) {
+  screenOn();
+  const AvatarDialogueLayout layout = avatarDialogueLayout(avatar_scale);
+  if (reuse_shell) {
+    clear_avatar_dialogue_content(layout);
+    return layout;
+  }
 
-  const int text_x = bubble_x + (large_title ? 7 : 10);
-  const int text_width = bubble_w - (large_title ? 14 : 20);
-  render_element_bubble_text(line1, line2, text_x, bubble_y + 5, text_width, large_title);
-  render_element_battery_level();
+  const uint16_t bg = avatarBackgroundColor();
+  M5.Display.fillScreen(bg);
+  render_element_zero_avatar(layout.avatar_x,
+                             layout.avatar_y,
+                             avatar_scale,
+                             kZeroAvatarCropLeft,
+                             kZeroAvatarVisibleWidth);
+  render_element_dialogue_bubble(layout.bubble_x,
+                                 layout.bubble_y,
+                                 layout.bubble_w,
+                                 layout.bubble_h,
+                                 layout.avatar_x - 1,
+                                 layout.tail_y);
+  return layout;
+}
+
+void ScreenRenderer::clear_avatar_dialogue_content(
+    const AvatarDialogueLayout& layout) {
+  const int x = layout.bubble_x + 4;
+  const int y = layout.bubble_y + 4;
+  const int w = std::max(0, layout.bubble_w - 8);
+  const int h = std::max(0, layout.bubble_h - 8);
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  M5.Display.fillRoundRect(x, y, w, h, 4, TFT_WHITE);
 }
 
 uint16_t ScreenRenderer::avatarBackgroundColor() const {
@@ -538,6 +930,47 @@ size_t ScreenRenderer::readViewportHeight() const {
   return static_cast<size_t>(
       std::max(1, M5.Display.height() - static_cast<int>(readBodyTop()) -
                       static_cast<int>(kReadPaddingBottom)));
+}
+
+void ScreenRenderer::renderWrappedChatText(const std::string& text,
+                                           int x,
+                                           int y,
+                                           int width_px,
+                                           size_t scroll_top) {
+  const int line_height = static_cast<int>(kReadLineHeight);
+  int line_y = y - static_cast<int>(scroll_top);
+  size_t line_width = 0;
+  std::string line;
+  M5.Display.setTextWrap(false);
+
+  auto flush_line = [&]() {
+    if (!line.empty()) {
+      M5.Display.setCursor(x, line_y);
+      M5.Display.print(line.c_str());
+      line.clear();
+    }
+    line_width = 0;
+    line_y += line_height;
+  };
+
+  for (size_t i = 0; i < text.size();) {
+    if (text[i] == '\n') {
+      ++i;
+      flush_line();
+      continue;
+    }
+
+    const size_t glyph_start = i;
+    const size_t glyph_width = utf8DisplayWidthPx(text, &i);
+    if (line_width > 0 &&
+        line_width + glyph_width > static_cast<size_t>(std::max(1, width_px))) {
+      flush_line();
+    }
+    line.append(text, glyph_start, i - glyph_start);
+    line_width += glyph_width;
+  }
+
+  flush_line();
 }
 
 size_t ScreenRenderer::estimateWrappedTextHeight(const std::string& text,

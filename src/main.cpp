@@ -2,8 +2,10 @@
 #include <HTTPClient.h>
 #include <LittleFS.h>
 #include <M5Unified.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <NimBLEDevice.h>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
@@ -11,6 +13,7 @@
 #include <esp_wifi.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -46,7 +49,7 @@ using zero_buddy::state::GlobalState;
 using zero_buddy::state::RenderScreenKind;
 using zero_buddy::screen::ScreenRenderer;
 
-constexpr uint32_t kRtcMagic = 0x5A0B2027UL;
+constexpr uint32_t kRtcMagic = 0x5A0B2028UL;
 constexpr gpio_num_t kBtnAWakePin = GPIO_NUM_37;
 constexpr gpio_num_t kBtnBPin = GPIO_NUM_39;
 constexpr gpio_num_t kLedGpio = GPIO_NUM_10;
@@ -71,8 +74,31 @@ constexpr char kAssistantQueueManifestPath[] = "/assistant_queue.txt";
 constexpr char kAsrWsHost[] = "openspeech.bytedance.com";
 constexpr uint16_t kAsrWsPort = 443;
 constexpr char kAsrWsPath[] = "/api/v3/sauc/bigmodel_nostream";
-constexpr char kZeroHost[] = "api.vm0.ai";
-constexpr char kZeroPostUrl[] = "https://api.vm0.ai/api/v1/chat-threads/messages";
+constexpr char kZeroHost[] = "vm0-api.vm6.ai";
+constexpr char kZeroPostUrl[] = "https://vm0-api.vm6.ai/api/v1/chat-threads/messages";
+constexpr char kZeroDeviceTokenUrl[] = "https://vm0-api.vm6.ai/api/device-token";
+constexpr char kZeroDeviceTokenPollUrl[] = "https://vm0-api.vm6.ai/api/device-token/poll";
+constexpr char kBb0VerificationUrl[] = "https://bb0.ai";
+constexpr char kFirmwareVersion[] = "0.1.0";
+constexpr char kRuntimeConfigNamespace[] = "zero_runtime";
+constexpr char kRuntimeWifiSsidKey[] = "wifi_ssid";
+constexpr char kRuntimeWifiPasswordKey[] = "wifi_password";
+constexpr char kRuntimeAuthTokenKey[] = "auth_token";
+constexpr char kRuntimeThreadIdKey[] = "thread_id";
+constexpr size_t kMaxWifiSsidChars = 64;
+constexpr size_t kMaxWifiPasswordChars = 128;
+constexpr size_t kMaxAuthTokenChars = 768;
+constexpr size_t kMaxThreadIdChars = 96;
+constexpr size_t kMaxPollTokenChars = 512;
+constexpr uint32_t kProvisioningConnectAttemptMs = 20000;
+constexpr char kBb0BleServiceUuid[] = "bb000001-8f16-4b2a-9bb0-000000000001";
+constexpr char kBb0BleInfoUuid[] = "bb000002-8f16-4b2a-9bb0-000000000001";
+constexpr char kBb0BleConfigUuid[] = "bb000003-8f16-4b2a-9bb0-000000000001";
+constexpr uint32_t kBb0BleServiceDataUuid32 = 0xBB000001UL;
+constexpr uint8_t kBleFlagWifiConfigured = 1U << 0;
+constexpr uint8_t kBleFlagAuthConfigured = 1U << 1;
+constexpr uint8_t kBleFlagThreadConfigured = 1U << 2;
+constexpr uint8_t kBleFlagError = 1U << 7;
 
 RTC_DATA_ATTR uint32_t g_rtc_magic = 0;
 RTC_DATA_ATTR GlobalState g_state;
@@ -84,10 +110,17 @@ bool g_btn_b_was_down = false;
 esp_timer_handle_t g_runtime_check_timer = nullptr;
 volatile bool g_runtime_check_due = false;
 volatile bool g_runtime_check_timer_active = false;
+bool g_ble_wifi_received = false;
+String g_ble_wifi_ssid;
+String g_ble_wifi_password;
+NimBLECharacteristic* g_ble_info_characteristic = nullptr;
+NimBLEAdvertising* g_ble_advertising = nullptr;
+bool g_ble_started = false;
 
 void beepAssistantLedOn();
 bool writeTextFile(const char* path, const std::string& value);
 bool writeAssistantQueueManifest(size_t count, size_t index, size_t scroll_top);
+void clearRuntimeConfig();
 
 bool stateLooksValid(const GlobalState& state) {
   if (state.checkDelayMs == 0 ||
@@ -99,7 +132,7 @@ bool stateLooksValid(const GlobalState& state) {
     return false;
   }
   const auto render_kind = static_cast<uint8_t>(state.lastRenderScreenState.kind);
-  return render_kind <= static_cast<uint8_t>(RenderScreenKind::RecordingFailed);
+  return render_kind <= static_cast<uint8_t>(RenderScreenKind::SetupStatus);
 }
 
 void ensureGlobalStateInitialized() {
@@ -170,6 +203,14 @@ bool buttonBDown() {
 void restartIfBtnBPressed() {
   const bool down = buttonBDown();
   if (down && !g_btn_b_was_down) {
+    if (buttonADown()) {
+      Serial.println("BtnA+BtnB clear runtime config");
+      clearRuntimeConfig();
+      g_screen.render_screen_setup_status("runtime config", "cleared");
+      Serial.flush();
+      delay(800);
+      esp_restart();
+    }
     Serial.println("BtnB restart");
     Serial.flush();
     delay(20);
@@ -487,6 +528,111 @@ bool configLooksPlaceholder(const char* value) {
   return value == nullptr || value[0] == '\0' || strstr(value, "your-") == value;
 }
 
+struct RuntimeConfig {
+  String wifi_ssid;
+  String wifi_password;
+  String auth_token;
+  String thread_id;
+
+  bool hasWifi() const {
+    return wifi_ssid.length() > 0;
+  }
+
+  bool hasAuthToken() const {
+    return auth_token.length() > 0;
+  }
+
+  bool hasThreadId() const {
+    return thread_id.length() > 0;
+  }
+};
+
+String readRuntimeConfigString(const char* key, size_t max_chars) {
+  Preferences prefs;
+  if (!prefs.begin(kRuntimeConfigNamespace, true)) {
+    return "";
+  }
+  String value = prefs.getString(key, "");
+  prefs.end();
+  if (value.length() > max_chars) {
+    return "";
+  }
+  return value;
+}
+
+bool writeRuntimeConfigString(const char* key, const String& value, size_t max_chars) {
+  if (value.length() == 0 || value.length() > max_chars) {
+    return false;
+  }
+  Preferences prefs;
+  if (!prefs.begin(kRuntimeConfigNamespace, false)) {
+    return false;
+  }
+  const size_t written = prefs.putString(key, value);
+  prefs.end();
+  return written == value.length();
+}
+
+void removeRuntimeConfigKey(const char* key) {
+  Preferences prefs;
+  if (!prefs.begin(kRuntimeConfigNamespace, false)) {
+    return;
+  }
+  prefs.remove(key);
+  prefs.end();
+}
+
+RuntimeConfig loadRuntimeConfig() {
+  RuntimeConfig config;
+  config.wifi_ssid = readRuntimeConfigString(kRuntimeWifiSsidKey, kMaxWifiSsidChars);
+  config.wifi_password =
+      readRuntimeConfigString(kRuntimeWifiPasswordKey, kMaxWifiPasswordChars);
+  config.auth_token = readRuntimeConfigString(kRuntimeAuthTokenKey, kMaxAuthTokenChars);
+  config.thread_id = readRuntimeConfigString(kRuntimeThreadIdKey, kMaxThreadIdChars);
+  return config;
+}
+
+bool saveRuntimeWifiConfig(const String& ssid, const String& password) {
+  if (!writeRuntimeConfigString(kRuntimeWifiSsidKey, ssid, kMaxWifiSsidChars)) {
+    return false;
+  }
+  if (password.length() == 0) {
+    removeRuntimeConfigKey(kRuntimeWifiPasswordKey);
+    return true;
+  }
+  return writeRuntimeConfigString(kRuntimeWifiPasswordKey, password, kMaxWifiPasswordChars);
+}
+
+bool saveRuntimeAuthToken(const String& auth_token) {
+  return writeRuntimeConfigString(kRuntimeAuthTokenKey, auth_token, kMaxAuthTokenChars);
+}
+
+bool saveRuntimeThreadId(const String& thread_id) {
+  return writeRuntimeConfigString(kRuntimeThreadIdKey, thread_id, kMaxThreadIdChars);
+}
+
+void clearRuntimeThreadId() {
+  removeRuntimeConfigKey(kRuntimeThreadIdKey);
+  zero_buddy::state::clearLastMessageId(&g_state);
+  clear_assistant_message();
+}
+
+void clearRuntimeAuthAndThread() {
+  removeRuntimeConfigKey(kRuntimeAuthTokenKey);
+  clearRuntimeThreadId();
+}
+
+void clearRuntimeConfig() {
+  Preferences prefs;
+  if (prefs.begin(kRuntimeConfigNamespace, false)) {
+    prefs.clear();
+    prefs.end();
+  }
+  zero_buddy::state::clearLastMessageId(&g_state);
+  zero_buddy::state::resetCheckDelay(&g_state);
+  clear_assistant_message();
+}
+
 enum class ButtonPressIntent {
   None,
   ShortPress,
@@ -536,39 +682,64 @@ class ButtonAbortDetector {
   ButtonPressIntent latched_intent_ = ButtonPressIntent::None;
 };
 
-bool connectWifi(ButtonAbortDetector* abort_detector) {
+bool connectWifiCredentials(const String& ssid,
+                            const String& password,
+                            uint32_t timeout_ms,
+                            ButtonAbortDetector* abort_detector) {
+  if (ssid.length() == 0) {
+    return false;
+  }
   if (WiFi.status() == WL_CONNECTED) {
     return true;
   }
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  esp_wifi_set_ps(WIFI_PS_NONE);
-  for (const auto& cred : kWifiCreds) {
-    if (configLooksPlaceholder(cred.ssid)) {
-      continue;
-    }
-    WiFi.disconnect(true, true);
-    restartAwareDelay(100);
-    WiFi.begin(cred.ssid, cred.password);
-    const uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiConnectAttemptMs) {
-      pollControls();
-      if (abort_detector != nullptr && abort_detector->shouldAbort()) {
-        return false;
-      }
-      delay(20);
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      return true;
-    }
+  WiFi.disconnect(true, true);
+  restartAwareDelay(100);
+  WiFi.mode(WIFI_STA);
+  if (g_ble_started) {
+    WiFi.setSleep(true);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  } else {
+    WiFi.setSleep(false);
+    esp_wifi_set_ps(WIFI_PS_NONE);
   }
-  return false;
+  WiFi.begin(ssid.c_str(), password.c_str());
+  const uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < timeout_ms) {
+    pollControls();
+    if (abort_detector != nullptr && abort_detector->shouldAbort()) {
+      return false;
+    }
+    delay(20);
+  }
+  return WiFi.status() == WL_CONNECTED;
 }
 
-bool httpGet(const String& url, String* body_out, ButtonAbortDetector* abort_detector) {
-  if (body_out == nullptr || configLooksPlaceholder(kZeroApiKey)) {
+bool connectWifi(ButtonAbortDetector* abort_detector) {
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
+  }
+  const RuntimeConfig config = loadRuntimeConfig();
+  return connectWifiCredentials(config.wifi_ssid,
+                                config.wifi_password,
+                                kWifiConnectAttemptMs,
+                                abort_detector);
+}
+
+struct HttpResponse {
+  int status_code = -1;
+  String body;
+};
+
+bool httpGetWithToken(const String& url,
+                      const String& auth_token,
+                      HttpResponse* response_out,
+                      ButtonAbortDetector* abort_detector) {
+  if (response_out == nullptr || auth_token.length() == 0) {
     return false;
   }
+  response_out->status_code = -1;
+  response_out->body.remove(0);
   restartIfBtnBPressed();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     return false;
@@ -580,8 +751,9 @@ bool httpGet(const String& url, String* body_out, ButtonAbortDetector* abort_det
   if (!http.begin(client, url)) {
     return false;
   }
-  http.addHeader("Authorization", String("Bearer ") + kZeroApiKey);
+  http.addHeader("Authorization", String("Bearer ") + auth_token);
   const int code = http.GET();
+  response_out->status_code = code;
   restartIfBtnBPressed();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     http.end();
@@ -591,18 +763,21 @@ bool httpGet(const String& url, String* body_out, ButtonAbortDetector* abort_det
     http.end();
     return false;
   }
-  *body_out = http.getString();
+  response_out->body = http.getString();
   http.end();
   return true;
 }
 
-bool httpPostJson(const String& url,
-                  const String& body,
-                  String* response_out,
-                  ButtonAbortDetector* abort_detector) {
-  if (response_out == nullptr || configLooksPlaceholder(kZeroApiKey)) {
+bool httpPostJsonRequest(const String& url,
+                         const String& body,
+                         const String& auth_token,
+                         HttpResponse* response_out,
+                         ButtonAbortDetector* abort_detector) {
+  if (response_out == nullptr) {
     return false;
   }
+  response_out->status_code = -1;
+  response_out->body.remove(0);
   restartIfBtnBPressed();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     return false;
@@ -614,9 +789,12 @@ bool httpPostJson(const String& url,
   if (!http.begin(client, url)) {
     return false;
   }
-  http.addHeader("Authorization", String("Bearer ") + kZeroApiKey);
+  if (auth_token.length() > 0) {
+    http.addHeader("Authorization", String("Bearer ") + auth_token);
+  }
   http.addHeader("Content-Type", "application/json");
   const int code = http.POST(body);
+  response_out->status_code = code;
   restartIfBtnBPressed();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     http.end();
@@ -626,8 +804,76 @@ bool httpPostJson(const String& url,
     http.end();
     return false;
   }
-  *response_out = http.getString();
+  response_out->body = http.getString();
   http.end();
+  return true;
+}
+
+bool httpPostJsonAnyStatus(const String& url,
+                           const String& body,
+                           const String& auth_token,
+                           HttpResponse* response_out,
+                           ButtonAbortDetector* abort_detector) {
+  if (response_out == nullptr) {
+    return false;
+  }
+  response_out->status_code = -1;
+  response_out->body.remove(0);
+  restartIfBtnBPressed();
+  if (abort_detector != nullptr && abort_detector->shouldAbort()) {
+    return false;
+  }
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(20000);
+  if (!http.begin(client, url)) {
+    return false;
+  }
+  if (auth_token.length() > 0) {
+    http.addHeader("Authorization", String("Bearer ") + auth_token);
+  }
+  http.addHeader("Content-Type", "application/json");
+  const int code = http.POST(body);
+  response_out->status_code = code;
+  restartIfBtnBPressed();
+  if (abort_detector != nullptr && abort_detector->shouldAbort()) {
+    http.end();
+    return false;
+  }
+  if (code > 0) {
+    response_out->body = http.getString();
+  }
+  http.end();
+  return code > 0;
+}
+
+bool httpGet(const String& url, String* body_out, ButtonAbortDetector* abort_detector) {
+  if (body_out == nullptr) {
+    return false;
+  }
+  const RuntimeConfig config = loadRuntimeConfig();
+  HttpResponse response;
+  if (!httpGetWithToken(url, config.auth_token, &response, abort_detector)) {
+    return false;
+  }
+  *body_out = response.body;
+  return true;
+}
+
+bool httpPostJson(const String& url,
+                  const String& body,
+                  String* response_out,
+                  ButtonAbortDetector* abort_detector) {
+  if (response_out == nullptr) {
+    return false;
+  }
+  const RuntimeConfig config = loadRuntimeConfig();
+  HttpResponse response;
+  if (!httpPostJsonRequest(url, body, config.auth_token, &response, abort_detector)) {
+    return false;
+  }
+  *response_out = response.body;
   return true;
 }
 
@@ -862,6 +1108,559 @@ bool transcribePcmFile(const char* path, std::string* text_out) {
   return !text_out->empty();
 }
 
+enum class BootHttpOutcome {
+  Ok,
+  NetworkFailed,
+  Rejected,
+};
+
+struct DeviceCodeSession {
+  String device_code;
+  String poll_token;
+  uint32_t expires_in_seconds = 300;
+  uint32_t interval_seconds = 3;
+};
+
+enum class DeviceTokenPollResult {
+  Approved,
+  Pending,
+  Expired,
+  NetworkFailed,
+  Rejected,
+};
+
+String chipSuffix() {
+  char suffix[5] = {0};
+  snprintf(suffix, sizeof(suffix), "%04X",
+           static_cast<unsigned>(ESP.getEfuseMac() & 0xFFFF));
+  return String(suffix);
+}
+
+bool extractJsonUnsigned(const String& body, const char* key, uint32_t* value_out) {
+  if (key == nullptr || value_out == nullptr) {
+    return false;
+  }
+  const String needle = String("\"") + key + "\":";
+  int pos = body.indexOf(needle);
+  if (pos < 0) {
+    return false;
+  }
+  pos += needle.length();
+  while (pos < static_cast<int>(body.length()) && isspace(body[pos])) {
+    ++pos;
+  }
+  uint32_t value = 0;
+  bool found = false;
+  while (pos < static_cast<int>(body.length()) && isdigit(body[pos])) {
+    found = true;
+    value = value * 10 + static_cast<uint32_t>(body[pos] - '0');
+    ++pos;
+  }
+  if (!found) {
+    return false;
+  }
+  *value_out = value;
+  return true;
+}
+
+BootHttpOutcome requestDeviceCode(DeviceCodeSession* session_out) {
+  if (session_out == nullptr) {
+    return BootHttpOutcome::Rejected;
+  }
+  session_out->device_code = "";
+  session_out->poll_token = "";
+  session_out->expires_in_seconds = 300;
+  session_out->interval_seconds = 3;
+  const String body = String("{\"device_type\":\"bb0\",\"device_id\":\"Zero-Buddy-") +
+                      chipSuffix() + "\",\"firmware_version\":\"" +
+                      kFirmwareVersion + "\"}";
+  HttpResponse response;
+  if (!httpPostJsonRequest(kZeroDeviceTokenUrl, body, "", &response, nullptr)) {
+    return response.status_code < 0 ? BootHttpOutcome::NetworkFailed
+                                    : BootHttpOutcome::Rejected;
+  }
+  const std::string response_body(response.body.c_str());
+  session_out->device_code =
+      String(zero_buddy::extractJsonString(response_body, "device_code").c_str());
+  session_out->poll_token =
+      String(zero_buddy::extractJsonString(response_body, "poll_token").c_str());
+  uint32_t expires = 300;
+  extractJsonUnsigned(response.body, "expires_in", &expires);
+  session_out->expires_in_seconds = expires == 0 ? 300 : expires;
+  uint32_t interval = 3;
+  extractJsonUnsigned(response.body, "interval", &interval);
+  session_out->interval_seconds = interval == 0 ? 3 : interval;
+  if (session_out->device_code.length() == 0 ||
+      session_out->poll_token.length() == 0 ||
+      session_out->poll_token.length() > kMaxPollTokenChars) {
+    return BootHttpOutcome::Rejected;
+  }
+  return BootHttpOutcome::Ok;
+}
+
+class Bb0ConfigWriteCallbacks : public NimBLECharacteristicCallbacks {
+ public:
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+    if (characteristic == nullptr) {
+      return;
+    }
+    const std::string payload = characteristic->getValue();
+    std::string ssid = zero_buddy::extractJsonString(payload, "wifi_ssid");
+    std::string password = zero_buddy::extractJsonString(payload, "wifi_password");
+    if (ssid.empty()) {
+      ssid = zero_buddy::extractJsonString(payload, "ssid");
+      password = zero_buddy::extractJsonString(payload, "password");
+    }
+    if (!ssid.empty() &&
+        ssid.size() <= kMaxWifiSsidChars &&
+        password.size() <= kMaxWifiPasswordChars) {
+      g_ble_wifi_ssid = String(ssid.c_str());
+      g_ble_wifi_password = String(password.c_str());
+      g_ble_wifi_received = true;
+      return;
+    }
+
+  }
+};
+
+String bleDeviceName() {
+  return String("Zero-Buddy-") + chipSuffix();
+}
+
+uint16_t bleShortDeviceId() {
+  return static_cast<uint16_t>(ESP.getEfuseMac() & 0xFFFF);
+}
+
+uint8_t bleProvisioningFlags(zero_buddy::ProvisioningError error) {
+  uint8_t flags = error == zero_buddy::ProvisioningError::None ? 0 : kBleFlagError;
+  const RuntimeConfig config = loadRuntimeConfig();
+  if (config.hasWifi()) {
+    flags |= kBleFlagWifiConfigured;
+  }
+  if (config.hasAuthToken()) {
+    flags |= kBleFlagAuthConfigured;
+  }
+  if (config.hasThreadId()) {
+    flags |= kBleFlagThreadConfigured;
+  }
+  return flags;
+}
+
+void updateBleAdvertisingState(zero_buddy::ProvisioningState state,
+                               zero_buddy::ProvisioningError error) {
+  if (g_ble_advertising == nullptr) {
+    return;
+  }
+  const auto data = zero_buddy::buildProvisioningServiceData(
+      state, bleProvisioningFlags(error), bleShortDeviceId(), error);
+  NimBLEAdvertisementData scan_data;
+  scan_data.setName(bleDeviceName().c_str());
+  if (!scan_data.setServiceData(
+          NimBLEUUID(kBb0BleServiceDataUuid32), data.data(), data.size()) ||
+      !g_ble_advertising->setScanResponseData(scan_data)) {
+    Serial.println("BLE service data update failed");
+  }
+}
+
+void appendNullableJsonString(String* json, const char* key, const String& value) {
+  if (json == nullptr || key == nullptr) {
+    return;
+  }
+  *json += "\"";
+  *json += key;
+  *json += "\":";
+  if (value.length() == 0) {
+    *json += "null";
+    return;
+  }
+  *json += "\"";
+  *json += jsonEscape(value);
+  *json += "\"";
+}
+
+String buildBleProvisioningInfoJson(zero_buddy::ProvisioningState state,
+                                    zero_buddy::ProvisioningError error,
+                                    const String& device_code,
+                                    const String& nonce) {
+  String json = "{";
+  json += "\"protocol\":\"bb0.provisioning.v1\",";
+  json += "\"device_id\":\"";
+  json += bleDeviceName();
+  json += "\",";
+  json += "\"firmware_version\":\"";
+  json += kFirmwareVersion;
+  json += "\",";
+  json += "\"provisioning_state\":\"";
+  json += zero_buddy::provisioningStateName(state);
+  json += "\",";
+  appendNullableJsonString(&json, "device_code", device_code);
+  json += ",";
+  appendNullableJsonString(&json, "ble_session_nonce", nonce);
+  json += ",\"error_code\":";
+  const char* error_code = zero_buddy::provisioningErrorCodeName(error);
+  if (error_code == nullptr || error_code[0] == '\0') {
+    json += "null";
+  } else {
+    json += "\"";
+    json += error_code;
+    json += "\"";
+  }
+  json += "}";
+  return json;
+}
+
+void publishBleProvisioningState(
+    zero_buddy::ProvisioningState state,
+    zero_buddy::ProvisioningError error = zero_buddy::ProvisioningError::None,
+    const String& device_code = "",
+    const String& nonce = "") {
+  updateBleAdvertisingState(state, error);
+  if (g_ble_info_characteristic == nullptr) {
+    return;
+  }
+  const String json = buildBleProvisioningInfoJson(state, error, device_code, nonce);
+  g_ble_info_characteristic->setValue(json.c_str());
+  g_ble_info_characteristic->notify();
+}
+
+bool ensureBleProvisioningStarted() {
+  if (g_ble_started) {
+    return true;
+  }
+  g_ble_wifi_received = false;
+  g_ble_wifi_ssid = "";
+  g_ble_wifi_password = "";
+
+  const String device_name = bleDeviceName();
+  if (WiFi.getMode() != WIFI_OFF || WiFi.status() == WL_CONNECTED) {
+    Serial.println("Stopping WiFi before BLE provisioning start");
+    WiFi.disconnect(false, false);
+    WiFi.mode(WIFI_OFF);
+    delay(120);
+  }
+  NimBLEDevice::init(device_name.c_str());
+  NimBLEServer* server = NimBLEDevice::createServer();
+  NimBLEService* service = server->createService(kBb0BleServiceUuid);
+  NimBLECharacteristic* info = service->createCharacteristic(
+      kBb0BleInfoUuid,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  NimBLECharacteristic* config = service->createCharacteristic(
+      kBb0BleConfigUuid,
+      NIMBLE_PROPERTY::WRITE);
+  static Bb0ConfigWriteCallbacks callbacks;
+  config->setCallbacks(&callbacks);
+  g_ble_info_characteristic = info;
+  g_ble_advertising = NimBLEDevice::getAdvertising();
+  g_ble_advertising->enableScanResponse(true);
+  g_ble_advertising->addServiceUUID(kBb0BleServiceUuid);
+  publishBleProvisioningState(zero_buddy::ProvisioningState::Setup);
+  g_ble_advertising->start();
+  g_ble_started = true;
+  return true;
+}
+
+void stopBleProvisioning() {
+  if (!g_ble_started) {
+    return;
+  }
+  if (g_ble_advertising != nullptr) {
+    g_ble_advertising->stop();
+  }
+  NimBLEDevice::deinit(true);
+  g_ble_info_characteristic = nullptr;
+  g_ble_advertising = nullptr;
+  g_ble_started = false;
+  g_ble_wifi_received = false;
+}
+
+bool waitForBleWifiCredentials() {
+  if (!ensureBleProvisioningStarted()) {
+    return false;
+  }
+  const String device_name = bleDeviceName();
+  g_ble_wifi_received = false;
+  publishBleProvisioningState(zero_buddy::ProvisioningState::Setup);
+  g_screen.render_screen_setup_wifi(device_name.c_str(), kBb0VerificationUrl);
+  while (!g_ble_wifi_received) {
+    pollControls();
+    delay(20);
+  }
+  publishBleProvisioningState(zero_buddy::ProvisioningState::WifiReceived);
+  return saveRuntimeWifiConfig(g_ble_wifi_ssid, g_ble_wifi_password);
+}
+
+bool provisionWifiOverBle() {
+  while (true) {
+    if (!waitForBleWifiCredentials()) {
+      publishBleProvisioningState(zero_buddy::ProvisioningState::Error,
+                                  zero_buddy::ProvisioningError::BleWriteFailed);
+      g_screen.render_screen_setup_status("wifi setup failed", "ble write");
+      restartAwareDelay(1200);
+      continue;
+    }
+    const String ssid = g_ble_wifi_ssid;
+    const String password = g_ble_wifi_password;
+    stopBleProvisioning();
+    g_screen.render_screen_setup_status("connecting wifi", ssid.c_str());
+    const bool connected = connectWifiCredentials(ssid,
+                                                  password,
+                                                  kProvisioningConnectAttemptMs,
+                                                  nullptr);
+    if (connected) {
+      return true;
+    }
+    const auto action =
+        zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::WifiUnavailable);
+    if (action.reprovision_wifi) {
+      g_screen.render_screen_setup_status("wifi failed", "send again");
+      restartAwareDelay(1500);
+    }
+  }
+}
+
+bool ensureWifiReady() {
+  RuntimeConfig config = loadRuntimeConfig();
+  if (config.hasWifi() &&
+      connectWifiCredentials(config.wifi_ssid, config.wifi_password, kWifiConnectAttemptMs, nullptr)) {
+    return true;
+  }
+  return provisionWifiOverBle();
+}
+
+DeviceTokenPollResult pollDeviceTokenOnce(const DeviceCodeSession& session,
+                                          uint32_t* next_interval_seconds) {
+  const String body = String("{\"device_code\":\"") + jsonEscape(session.device_code) +
+                      "\",\"poll_token\":\"" + jsonEscape(session.poll_token) + "\"}";
+  HttpResponse response;
+  if (!httpPostJsonAnyStatus(kZeroDeviceTokenPollUrl, body, "", &response, nullptr)) {
+    return DeviceTokenPollResult::NetworkFailed;
+  }
+  if (response.status_code == 202) {
+    if (next_interval_seconds != nullptr) {
+      uint32_t interval = *next_interval_seconds;
+      extractJsonUnsigned(response.body, "interval", &interval);
+      *next_interval_seconds = interval == 0 ? *next_interval_seconds : interval;
+    }
+    return DeviceTokenPollResult::Pending;
+  }
+  if (response.status_code == 410) {
+    return DeviceTokenPollResult::Expired;
+  }
+  if (response.status_code != 200) {
+    return DeviceTokenPollResult::Rejected;
+  }
+
+  const std::string response_body(response.body.c_str());
+  const std::string status = zero_buddy::extractJsonString(response_body, "status");
+  if (status == "pending") {
+    if (next_interval_seconds != nullptr) {
+      uint32_t interval = *next_interval_seconds;
+      extractJsonUnsigned(response.body, "interval", &interval);
+      *next_interval_seconds = interval == 0 ? *next_interval_seconds : interval;
+    }
+    return DeviceTokenPollResult::Pending;
+  }
+  if (status == "expired") {
+    return DeviceTokenPollResult::Expired;
+  }
+  if (!status.empty() && status != "approved") {
+    return DeviceTokenPollResult::Rejected;
+  }
+
+  const String auth_token =
+      String(zero_buddy::extractJsonString(response_body, "api_token").c_str());
+  std::string thread = zero_buddy::extractJsonString(response_body, "thread_id");
+  if (thread.empty()) {
+    thread = zero_buddy::extractJsonString(response_body, "threadId");
+  }
+  const String thread_id = String(thread.c_str());
+  if (auth_token.length() == 0 || auth_token.length() > kMaxAuthTokenChars ||
+      thread_id.length() == 0 || thread_id.length() > kMaxThreadIdChars) {
+    return DeviceTokenPollResult::Rejected;
+  }
+  if (!saveRuntimeAuthToken(auth_token) || !saveRuntimeThreadId(thread_id)) {
+    return DeviceTokenPollResult::Rejected;
+  }
+  zero_buddy::state::clearLastMessageId(&g_state);
+  zero_buddy::state::resetCheckDelay(&g_state);
+  clear_assistant_message();
+  return DeviceTokenPollResult::Approved;
+}
+
+DeviceTokenPollResult pollDeviceTokenUntilApproved(const DeviceCodeSession& session) {
+  const uint32_t expires_seconds =
+      session.expires_in_seconds == 0 ? 300 : session.expires_in_seconds;
+  uint32_t interval_seconds =
+      session.interval_seconds == 0 ? 3 : session.interval_seconds;
+  const uint32_t expires_ms = expires_seconds * 1000UL;
+  const uint32_t start = millis();
+  uint32_t next_poll_at = start;
+  uint32_t last_rendered_seconds = UINT32_MAX;
+
+  while (static_cast<int32_t>(millis() - (start + expires_ms)) < 0) {
+    pollControls();
+    const uint32_t now = millis();
+    const uint32_t elapsed = now - start;
+    const uint32_t remaining_ms = elapsed >= expires_ms ? 0 : expires_ms - elapsed;
+    const uint32_t remaining_seconds = (remaining_ms + 999UL) / 1000UL;
+    if (remaining_seconds != last_rendered_seconds) {
+      g_screen.render_screen_setup_device_code(session.device_code.c_str(), remaining_seconds);
+      last_rendered_seconds = remaining_seconds;
+    }
+
+    if (static_cast<int32_t>(now - next_poll_at) >= 0) {
+      const DeviceTokenPollResult result =
+          pollDeviceTokenOnce(session, &interval_seconds);
+      if (result == DeviceTokenPollResult::Approved ||
+          result == DeviceTokenPollResult::Expired ||
+          result == DeviceTokenPollResult::Rejected) {
+        return result;
+      }
+      const uint32_t bounded_interval = std::max<uint32_t>(1, std::min<uint32_t>(30, interval_seconds));
+      next_poll_at = millis() + bounded_interval * 1000UL;
+    }
+    delay(20);
+  }
+  return DeviceTokenPollResult::Expired;
+}
+
+bool runDeviceCodeProvisioning() {
+  while (true) {
+    stopBleProvisioning();
+    if (!ensureWifiReady()) {
+      continue;
+    }
+    DeviceCodeSession session;
+    const BootHttpOutcome requested = requestDeviceCode(&session);
+    if (requested == BootHttpOutcome::NetworkFailed) {
+      g_screen.render_screen_setup_status("network issue", "retrying");
+      restartAwareDelay(1500);
+      ensureWifiReady();
+      continue;
+    }
+    if (requested != BootHttpOutcome::Ok) {
+      g_screen.render_screen_setup_status("temporarily", "unavailable");
+      while (true) {
+        pollControls();
+        delay(50);
+      }
+    }
+    const DeviceTokenPollResult poll_result = pollDeviceTokenUntilApproved(session);
+    if (poll_result == DeviceTokenPollResult::Approved) {
+      g_screen.render_screen_setup_status("device bound", "ready");
+      restartAwareDelay(800);
+      return true;
+    }
+    if (poll_result == DeviceTokenPollResult::Rejected) {
+      g_screen.render_screen_setup_status("temporarily", "unavailable");
+      while (true) {
+        pollControls();
+        delay(50);
+      }
+    }
+    g_screen.render_screen_setup_status("code expired", "retrying");
+    restartAwareDelay(1500);
+  }
+}
+
+BootHttpOutcome validateRuntimeThread(const RuntimeConfig& config) {
+  if (!config.hasAuthToken() || !config.hasThreadId()) {
+    return BootHttpOutcome::Rejected;
+  }
+  const String url = String("https://") + kZeroHost + "/api/v1/chat-threads/" +
+                     config.thread_id + "/messages?limit=1";
+  HttpResponse response;
+  if (!httpGetWithToken(url, config.auth_token, &response, nullptr)) {
+    return response.status_code < 0 ? BootHttpOutcome::NetworkFailed
+                                    : BootHttpOutcome::Rejected;
+  }
+  return BootHttpOutcome::Ok;
+}
+
+BootHttpOutcome createRuntimeThreadFromInitMessage(const RuntimeConfig& config) {
+  if (!config.hasAuthToken()) {
+    return BootHttpOutcome::Rejected;
+  }
+  const String body = "{\"prompt\":\"hello world from BB0\"}";
+  HttpResponse response;
+  if (!httpPostJsonRequest(kZeroPostUrl, body, config.auth_token, &response, nullptr)) {
+    return response.status_code < 0 ? BootHttpOutcome::NetworkFailed
+                                    : BootHttpOutcome::Rejected;
+  }
+  const std::string response_body(response.body.c_str());
+  const String thread_id =
+      String(zero_buddy::extractJsonString(response_body, "threadId").c_str());
+  const String message_id =
+      String(zero_buddy::extractJsonString(response_body, "messageId").c_str());
+  if (thread_id.length() == 0 || thread_id.length() > kMaxThreadIdChars) {
+    return BootHttpOutcome::Rejected;
+  }
+  if (!saveRuntimeThreadId(thread_id)) {
+    return BootHttpOutcome::Rejected;
+  }
+  if (message_id.length() > 0) {
+    zero_buddy::state::setLastMessageId(&g_state, std::string(message_id.c_str()));
+  }
+  zero_buddy::state::resetCheckDelay(&g_state);
+  clear_assistant_message();
+  return BootHttpOutcome::Ok;
+}
+
+bool ensureIdentityReady() {
+  while (true) {
+    RuntimeConfig config = loadRuntimeConfig();
+    if (!config.hasAuthToken()) {
+      runDeviceCodeProvisioning();
+      continue;
+    }
+    if (!config.hasThreadId()) {
+      const BootHttpOutcome created = createRuntimeThreadFromInitMessage(config);
+      if (created == BootHttpOutcome::Ok) {
+        continue;
+      }
+      if (created == BootHttpOutcome::NetworkFailed) {
+        ensureWifiReady();
+        continue;
+      }
+      const auto action =
+          zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::ThreadCreateFailed);
+      if (action.clear_auth_token) {
+        clearRuntimeAuthAndThread();
+      }
+      continue;
+    }
+
+    const BootHttpOutcome validated = validateRuntimeThread(config);
+    if (validated == BootHttpOutcome::Ok) {
+      return true;
+    }
+    if (validated == BootHttpOutcome::NetworkFailed) {
+      ensureWifiReady();
+      continue;
+    }
+    const auto action =
+        zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::MessageReadFailed);
+    if (action.clear_thread_id) {
+      clearRuntimeThreadId();
+    }
+  }
+}
+
+bool resetRuntimeConfigRequested() {
+  return buttonADown() && buttonBDown();
+}
+
+void runBootPreflight() {
+  if (resetRuntimeConfigRequested()) {
+    clearRuntimeConfig();
+    g_screen.render_screen_setup_status("runtime config", "cleared");
+    restartAwareDelay(1200);
+  }
+  ensureWifiReady();
+  ensureIdentityReady();
+  stopBleProvisioning();
+}
+
 class HardwareCheckOps : public CheckAssistantMessageOps {
  public:
   void setMode(CheckAssistantMessageMode* mode) {
@@ -880,11 +1679,12 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
 
   bool pollAssistantMessages(const std::string& since_id,
                              AssistantCheckResult* result_out) override {
-    if (result_out == nullptr || configLooksPlaceholder(kZeroThreadId)) {
+    const RuntimeConfig config = loadRuntimeConfig();
+    if (result_out == nullptr || !config.hasThreadId()) {
       return false;
     }
     String url = String("https://") + kZeroHost + "/api/v1/chat-threads/" +
-                 kZeroThreadId + "/messages?limit=10";
+                 config.thread_id + "/messages?limit=10";
     if (!since_id.empty()) {
       url += "&sinceId=" + String(since_id.c_str());
     }
@@ -1243,7 +2043,8 @@ class HardwareRecordingOps : public RecordingOps {
   }
 
   bool sendTextMessage(const std::string& text, std::string* user_message_id_out) override {
-    if (user_message_id_out == nullptr || text.empty() || configLooksPlaceholder(kZeroThreadId)) {
+    const RuntimeConfig config = loadRuntimeConfig();
+    if (user_message_id_out == nullptr || text.empty() || !config.hasThreadId()) {
       recording_failure_detail_ = "bad-message";
       return false;
     }
@@ -1251,7 +2052,7 @@ class HardwareRecordingOps : public RecordingOps {
     g_screen.render_screen_recording_sending();
     const String body =
         String("{\"prompt\":\"") + jsonEscape(String(text.c_str())) +
-        "\",\"threadId\":\"" + kZeroThreadId + "\"}";
+        "\",\"threadId\":\"" + config.thread_id + "\"}";
     String response;
     if (!httpPostJson(kZeroPostUrl, body, &response, nullptr)) {
       recording_failure_detail_ = "http";
@@ -1426,6 +2227,8 @@ void setup() {
     restartAwareDelay(kBootSplashMs);
   }
 
+  runBootPreflight();
+
   if (wake_cause == ESP_SLEEP_WAKEUP_TIMER) {
     runCheckAssistantThenSleep();
     return;
@@ -1440,7 +2243,7 @@ void setup() {
     return;
   }
 
-  enterDeepSleep();
+  runReadThenSleep();
 }
 
 void loop() {}

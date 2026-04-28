@@ -425,6 +425,79 @@ bool shouldAutoSleepScreen(const PowerWindowState& state, bool busy, uint32_t no
   return timeReached(now_ms, state.awake_until_ms);
 }
 
+BootRepairAction repairActionForBootFailure(BootRepairEvent event) {
+  BootRepairAction action;
+  switch (event) {
+    case BootRepairEvent::WifiUnavailable:
+      action.reprovision_wifi = true;
+      break;
+    case BootRepairEvent::MessageReadFailed:
+      action.clear_thread_id = true;
+      break;
+    case BootRepairEvent::ThreadCreateFailed:
+      action.clear_auth_token = true;
+      action.clear_thread_id = true;
+      break;
+  }
+  return action;
+}
+
+const char* provisioningStateName(ProvisioningState state) {
+  switch (state) {
+    case ProvisioningState::Setup:
+      return "setup";
+    case ProvisioningState::WifiReceived:
+      return "wifi_received";
+    case ProvisioningState::WifiConnecting:
+      return "wifi_connecting";
+    case ProvisioningState::WifiConnected:
+      return "wifi_connected";
+    case ProvisioningState::DeviceCodePending:
+      return "device_code_pending";
+    case ProvisioningState::DeviceCodeReady:
+      return "device_code_ready";
+    case ProvisioningState::Binding:
+      return "binding";
+    case ProvisioningState::Provisioned:
+      return "provisioned";
+    case ProvisioningState::Error:
+      return "error";
+  }
+  return "error";
+}
+
+const char* provisioningErrorCodeName(ProvisioningError error) {
+  switch (error) {
+    case ProvisioningError::None:
+      return "";
+    case ProvisioningError::WifiFailed:
+      return "wifi_failed";
+    case ProvisioningError::DeviceCodeFailed:
+      return "device_code_failed";
+    case ProvisioningError::CodeExpired:
+      return "code_expired";
+    case ProvisioningError::BleWriteFailed:
+      return "ble_write_failed";
+    case ProvisioningError::NetworkFailed:
+      return "network_failed";
+  }
+  return "unknown";
+}
+
+std::vector<uint8_t> buildProvisioningServiceData(ProvisioningState state,
+                                                  uint8_t flags,
+                                                  uint16_t short_device_id,
+                                                  ProvisioningError error) {
+  return {
+      1,
+      static_cast<uint8_t>(state),
+      flags,
+      static_cast<uint8_t>(short_device_id & 0xFF),
+      static_cast<uint8_t>((short_device_id >> 8) & 0xFF),
+      static_cast<uint8_t>(error),
+  };
+}
+
 BuddyTransition applyBuddyEvent(BuddyState state,
                                 BuddyEvent event,
                                 const uint32_t* poll_backoff_ms,

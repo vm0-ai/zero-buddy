@@ -57,7 +57,11 @@ All transitions are driven by the state machine. A mode must not directly mutate
 
 - BtnB is a global runtime control.
   - A short BtnB press restarts the firmware with `esp_restart()`.
-  - This is not a mode transition and does not mutate persistent global state.
+  - Holding BtnA while pressing BtnB clears runtime provisioning config before
+    restarting. This clears Wi-Fi, auth token, thread id, local message cursor,
+    and assistant message files.
+  - A plain BtnB restart is not a mode transition and does not mutate persistent
+    global state.
   - Runtime loops that wait on user input, Wi-Fi, ASR, status/result display, or the boot splash should poll BtnB.
   - Deep sleep wake remains owned by the configured RTC timer and BtnA wake source.
 
@@ -109,6 +113,13 @@ struct GlobalState {
   - Tracks the last full-screen render key so mode transitions can avoid drawing the same screen again.
   - Cleared when the screen is turned off.
   - Local overlays, such as the top-right battery icon, are not part of this key.
+  - Zero avatar dialogue screens share a stable shell: background, avatar,
+    bubble frame, and bubble tail.
+  - When moving between two dialogue-bubble screen kinds, the renderer should
+    keep that shell and redraw only the bubble's interior content whenever the
+    layout has not changed.
+  - Examples include `Boot`, `ReadEmpty`, all `Recording*` status screens,
+    `SetupWifi`, `SetupDeviceCode`, and `SetupStatus`.
   - Current full-screen render kinds:
     - `Boot`
     - `ReadEmpty`
@@ -121,6 +132,9 @@ struct GlobalState {
     - `RecordingSent`
     - `RecordingAborted`
     - `RecordingFailed`
+    - `SetupWifi`
+    - `SetupDeviceCode`
+    - `SetupStatus`
 
 Mode-local state, such as audio buffers, network request handles, temporary file handles, and abort flags, should stay inside the owning mode instead of being added to `GlobalState`.
 
@@ -144,6 +158,22 @@ Some global state is also persisted because the device spends most of its time i
   - temporary recording or network response files, if a mode needs them internally
 
 `CheckAssistantMessage` owns appending assistant messages through `append_assistant_message`. `Recording` owns clearing assistant messages before a new user turn through `clear_assistant_message`. `Read` owns read progress updates and also clears assistant messages through `clear_assistant_message` after the final stored assistant message has been fully read. The assistant LED is not controlled directly by modes; it is updated inside the append/clear helpers so it reflects whether LittleFS currently has assistant messages.
+
+- NVS namespace `zero_runtime`
+  - `wifi_ssid`
+  - `wifi_password`
+  - `auth_token`
+  - `thread_id`
+  - These are runtime provisioning values, not compile-time firmware constants.
+
+Wi-Fi provisioning status is split between BLE advertising and GATT:
+
+- Advertising exposes only coarse state and non-sensitive flags for discovery.
+- GATT info characteristic JSON is the source of truth while BLE Wi-Fi setup is
+  active.
+- After Wi-Fi is received, BLE is stopped before device-code auth begins.
+- `api_token`, `thread_id`, `poll_token`, and `device_code` are never
+  advertised. Token approval is polled by the device over HTTPS.
 
 ## Transitions
 

@@ -42,6 +42,9 @@ enum class RenderScreenKind : uint8_t {
   RecordingSent,
   RecordingAborted,
   RecordingFailed,
+  SetupWifi,
+  SetupDeviceCode,
+  SetupStatus,
 };
 
 struct RenderScreenState {

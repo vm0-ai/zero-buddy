@@ -83,6 +83,39 @@ struct PowerWindowState {
   uint32_t awake_until_ms = 0;
 };
 
+enum class BootRepairEvent : uint8_t {
+  WifiUnavailable,
+  MessageReadFailed,
+  ThreadCreateFailed,
+};
+
+struct BootRepairAction {
+  bool reprovision_wifi = false;
+  bool clear_auth_token = false;
+  bool clear_thread_id = false;
+};
+
+enum class ProvisioningState : uint8_t {
+  Setup = 0,
+  WifiReceived = 1,
+  WifiConnecting = 2,
+  WifiConnected = 3,
+  DeviceCodePending = 4,
+  DeviceCodeReady = 5,
+  Binding = 6,
+  Provisioned = 7,
+  Error = 8,
+};
+
+enum class ProvisioningError : uint8_t {
+  None = 0,
+  WifiFailed = 1,
+  DeviceCodeFailed = 2,
+  CodeExpired = 3,
+  BleWriteFailed = 4,
+  NetworkFailed = 5,
+};
+
 enum class BuddyMode : uint8_t {
   DeepSleep,
   Home,
@@ -190,6 +223,13 @@ bool externalPowerPresent(int32_t vbus_mv,
 void wakePowerWindow(PowerWindowState* state, uint32_t now_ms, uint32_t duration_ms);
 void sleepPowerWindow(PowerWindowState* state);
 bool shouldAutoSleepScreen(const PowerWindowState& state, bool busy, uint32_t now_ms);
+BootRepairAction repairActionForBootFailure(BootRepairEvent event);
+const char* provisioningStateName(ProvisioningState state);
+const char* provisioningErrorCodeName(ProvisioningError error);
+std::vector<uint8_t> buildProvisioningServiceData(ProvisioningState state,
+                                                  uint8_t flags,
+                                                  uint16_t short_device_id,
+                                                  ProvisioningError error);
 BuddyTransition applyBuddyEvent(BuddyState state,
                                 BuddyEvent event,
                                 const uint32_t* poll_backoff_ms,

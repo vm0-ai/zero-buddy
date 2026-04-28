@@ -56,6 +56,7 @@ constexpr uint32_t kLongPressMs = 550;
 constexpr uint32_t kMaxRecordingMs = 60000;
 constexpr uint32_t kBootSplashMs = 3000;
 constexpr uint32_t kWifiConnectAttemptMs = 12000;
+constexpr uint32_t kReadBatteryFollowupRefreshMs = 5000;
 constexpr uint8_t kRecordingCpuMhz = 240;
 constexpr uint8_t kNetworkCpuMhz = 80;
 constexpr uint8_t kReadCpuMhz = 80;
@@ -388,6 +389,34 @@ void drawAvatarStatus(const char* line1, const char* line2 = "") {
 
 void drawEmptyReadScreen() {
   drawAvatarDialogue("no message");
+}
+
+String batteryLevelLabel() {
+  const int32_t level = M5.Power.getBatteryLevel();
+  if (level < 0) {
+    return "--%";
+  }
+  return String(std::min<int32_t>(100, level)) + "%";
+}
+
+void drawReadBatteryLevel() {
+  const uint16_t bg = avatarBackgroundColor();
+  const uint16_t fg = dialogueBorderColor();
+  const String label = batteryLevelLabel();
+  M5.Display.setTextWrap(false);
+  M5.Display.setFont(&fonts::Font0);
+  const int text_w = M5.Display.textWidth(label.c_str());
+  const int x = std::max(0, M5.Display.width() - kReadPaddingRight - text_w);
+  const int y = kReadPaddingTop;
+  const int clear_x = std::max(0, x - 1);
+  M5.Display.fillRect(clear_x,
+                      0,
+                      M5.Display.width() - clear_x,
+                      kReadPaddingTop + kReadHeaderHeight,
+                      bg);
+  M5.Display.setTextColor(fg, bg);
+  M5.Display.setCursor(x, y);
+  M5.Display.print(label);
 }
 
 void drawBootScreen() {
@@ -1261,6 +1290,7 @@ class HardwareReadOps : public ReadOps {
 
   void renderNoAssistantMessage() override {
     drawEmptyReadScreen();
+    refreshBatteryLevel();
   }
 
   void renderAssistantMessage(size_t index,
@@ -1303,6 +1333,7 @@ class HardwareReadOps : public ReadOps {
     if (has_next_page) {
       drawNextPageArrow();
     }
+    refreshBatteryLevel();
   }
 
   ReadInput waitForInput(uint32_t timeout_ms) override {
@@ -1310,6 +1341,7 @@ class HardwareReadOps : public ReadOps {
     uint32_t down_since_ms = 0;
     while (millis() - start < timeout_ms) {
       pollControls();
+      refreshBatteryLevelIfDue();
       if (buttonADown()) {
         const uint32_t now = millis();
         if (down_since_ms == 0) {
@@ -1319,6 +1351,8 @@ class HardwareReadOps : public ReadOps {
           return ReadInput::LongPress;
         }
       } else if (down_since_ms != 0) {
+        refreshBatteryLevel();
+        scheduleBatteryFollowupRefresh();
         return ReadInput::ShortPress;
       }
       restartAwareDelay(10);
@@ -1331,6 +1365,26 @@ class HardwareReadOps : public ReadOps {
   void closeFiles() override {}
 
  private:
+  void refreshBatteryLevel() {
+    drawReadBatteryLevel();
+  }
+
+  void scheduleBatteryFollowupRefresh() {
+    battery_followup_due_ms_ = millis() + kReadBatteryFollowupRefreshMs;
+    battery_followup_refresh_scheduled_ = true;
+  }
+
+  void refreshBatteryLevelIfDue() {
+    if (!battery_followup_refresh_scheduled_) {
+      return;
+    }
+    if (static_cast<int32_t>(millis() - battery_followup_due_ms_) < 0) {
+      return;
+    }
+    battery_followup_refresh_scheduled_ = false;
+    refreshBatteryLevel();
+  }
+
   int readBodyTop() const {
     return static_cast<int>(kReadPaddingTop + kReadHeaderHeight + 4);
   }
@@ -1354,6 +1408,9 @@ class HardwareReadOps : public ReadOps {
                             cy + 5,
                             dialogueBorderColor());
   }
+
+  uint32_t battery_followup_due_ms_ = 0;
+  bool battery_followup_refresh_scheduled_ = false;
 };
 
 class HardwareRecordingOps : public RecordingOps {

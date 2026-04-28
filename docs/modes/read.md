@@ -12,6 +12,7 @@
   - `scrollTop` for that message
 - Clearing assistant messages after the final stored message has been fully read.
 - The 15 second idle timeout while the user is in `Read`.
+- The battery percentage overlay in the top-right corner while reading.
 
 ## Not Owned
 
@@ -42,6 +43,7 @@
    - If the current message is already fully scrolled, BtnA short press advances to the next assistant message.
    - Each scroll or message advance persists the new message index and `scrollTop`.
    - Each BtnA short press restarts the 15 second idle timeout.
+   - Each BtnA short press immediately refreshes the top-right battery percentage and schedules one more battery refresh 5 seconds later.
    - If the final assistant message is already fully scrolled, BtnA short press calls `clear_assistant_message`, then renders the empty state.
    - Idle timeout completes the mode and enters `DeepSleep`.
    - BtnA long press aborts the mode before entering `Recording`.
@@ -50,6 +52,7 @@
 
 - Assistant message rendering uses a Chinese-capable M5GFX efont so Chinese text is visible.
 - The top-left header shows the current message position, such as `1/1`.
+- The top-right header shows the current battery percentage.
 - The message body is clipped to the viewport and rendered from the persisted `scrollTop`.
 - The 80x45 Zero dot-matrix avatar is rendered in:
   - `Recording` status screens.

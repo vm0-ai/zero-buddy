@@ -51,6 +51,14 @@ Each mode exposes two lifecycle methods:
 
 All transitions are driven by the state machine. A mode must not directly mutate the global current mode. A mode may return a completion result or abort reason, and the state machine performs the next transition.
 
+## Global Hardware Controls
+
+- BtnB is a global runtime control.
+  - A short BtnB press restarts the firmware with `esp_restart()`.
+  - This is not a mode transition and does not mutate persistent global state.
+  - Runtime loops that wait on user input, Wi-Fi, ASR, status/result display, or the boot splash should poll BtnB.
+  - Deep sleep wake remains owned by the configured RTC timer and BtnA wake source.
+
 ## Global State
 
 The first rewrite keeps a small global state surface. Global state is reserved for data that must survive across modes or across RTC wake cycles.

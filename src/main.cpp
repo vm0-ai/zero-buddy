@@ -6,6 +6,7 @@
 #include <WiFiClientSecure.h>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
+#include <esp_system.h>
 #include <esp_wifi.h>
 
 #include <algorithm>
@@ -43,6 +44,7 @@ using zero_buddy::state::GlobalState;
 
 constexpr uint32_t kRtcMagic = 0x5A0B2026UL;
 constexpr gpio_num_t kBtnAWakePin = GPIO_NUM_37;
+constexpr gpio_num_t kBtnBPin = GPIO_NUM_39;
 constexpr gpio_num_t kLedGpio = GPIO_NUM_10;
 constexpr int kLedPin = static_cast<int>(kLedGpio);
 constexpr int kBuzzerPin = 2;
@@ -89,6 +91,7 @@ RTC_DATA_ATTR GlobalState g_state;
 
 uint8_t g_pcm_buffer[kPcmBufferBytes] = {0};
 uint8_t g_asr_buffer[kAsrChunkBytes] = {0};
+bool g_btn_b_was_down = false;
 
 constexpr char kZeroAvatar[kZeroAvatarHeight][kZeroAvatarWidth + 1] = {
     "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
@@ -212,13 +215,46 @@ bool buttonADown() {
   return digitalRead(static_cast<int>(kBtnAWakePin)) == LOW;
 }
 
+bool buttonBDown() {
+  return digitalRead(static_cast<int>(kBtnBPin)) == LOW;
+}
+
+void restartIfBtnBPressed() {
+  const bool down = buttonBDown();
+  if (down && !g_btn_b_was_down) {
+    Serial.println("BtnB restart");
+    Serial.flush();
+    delay(20);
+    esp_restart();
+  }
+  g_btn_b_was_down = down;
+}
+
+void pollControls() {
+  M5.update();
+  restartIfBtnBPressed();
+}
+
+void restartAwareDelay(uint32_t duration_ms) {
+  const uint32_t start = millis();
+  while (millis() - start < duration_ms) {
+    pollControls();
+    const uint32_t elapsed = millis() - start;
+    if (elapsed >= duration_ms) {
+      break;
+    }
+    const uint32_t remaining = duration_ms - elapsed;
+    delay(remaining > 10 ? 10 : remaining);
+  }
+}
+
 bool waitForBtnALongPress(uint32_t hold_ms) {
   if (!buttonADown()) {
     return false;
   }
   const uint32_t start = millis();
   while (buttonADown()) {
-    M5.update();
+    pollControls();
     if (millis() - start >= hold_ms) {
       return true;
     }
@@ -727,11 +763,11 @@ bool connectWifi(ButtonAbortDetector* abort_detector) {
       continue;
     }
     WiFi.disconnect(true, true);
-    delay(100);
+    restartAwareDelay(100);
     WiFi.begin(cred.ssid, cred.password);
     const uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiConnectAttemptMs) {
-      M5.update();
+      pollControls();
       if (abort_detector != nullptr && abort_detector->shouldAbort()) {
         return false;
       }
@@ -748,6 +784,7 @@ bool httpGet(const String& url, String* body_out, ButtonAbortDetector* abort_det
   if (body_out == nullptr || configLooksPlaceholder(kZeroApiKey)) {
     return false;
   }
+  restartIfBtnBPressed();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     return false;
   }
@@ -760,6 +797,7 @@ bool httpGet(const String& url, String* body_out, ButtonAbortDetector* abort_det
   }
   http.addHeader("Authorization", String("Bearer ") + kZeroApiKey);
   const int code = http.GET();
+  restartIfBtnBPressed();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     http.end();
     return false;
@@ -780,6 +818,7 @@ bool httpPostJson(const String& url,
   if (response_out == nullptr || configLooksPlaceholder(kZeroApiKey)) {
     return false;
   }
+  restartIfBtnBPressed();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     return false;
   }
@@ -793,6 +832,7 @@ bool httpPostJson(const String& url,
   http.addHeader("Authorization", String("Bearer ") + kZeroApiKey);
   http.addHeader("Content-Type", "application/json");
   const int code = http.POST(body);
+  restartIfBtnBPressed();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     http.end();
     return false;
@@ -815,7 +855,7 @@ bool readExact(WiFiClientSecure* client, uint8_t* out, size_t len, uint32_t time
   while (offset < len && static_cast<int32_t>(millis() - deadline) < 0) {
     const int available = client->available();
     if (available <= 0) {
-      delay(2);
+      restartAwareDelay(2);
       continue;
     }
     const size_t want = std::min(len - offset, static_cast<size_t>(available));
@@ -844,7 +884,7 @@ bool readHttpHeaders(WiFiClientSecure* client, String* headers_out, uint32_t tim
         return false;
       }
     }
-    delay(2);
+    restartAwareDelay(2);
   }
   return headers_out->indexOf("\r\n\r\n") >= 0;
 }
@@ -1005,13 +1045,14 @@ bool transcribePcmFile(const char* path, std::string* text_out) {
       client.stop();
       return false;
     }
-    delay(80);
+    restartAwareDelay(80);
   }
   file.close();
 
   const uint32_t deadline = millis() + 10000;
   std::string best_text;
   while (static_cast<int32_t>(millis() - deadline) < 0) {
+    restartIfBtnBPressed();
     uint8_t opcode = 0;
     std::vector<uint8_t> payload;
     if (!wsReadFrame(&client, &opcode, &payload, 1000)) {
@@ -1268,7 +1309,7 @@ class HardwareReadOps : public ReadOps {
     const uint32_t start = millis();
     uint32_t down_since_ms = 0;
     while (millis() - start < timeout_ms) {
-      M5.update();
+      pollControls();
       if (buttonADown()) {
         const uint32_t now = millis();
         if (down_since_ms == 0) {
@@ -1280,7 +1321,7 @@ class HardwareReadOps : public ReadOps {
       } else if (down_since_ms != 0) {
         return ReadInput::ShortPress;
       }
-      delay(10);
+      restartAwareDelay(10);
     }
     return ReadInput::Timeout;
   }
@@ -1328,7 +1369,7 @@ class HardwareRecordingOps : public RecordingOps {
       drawAvatarStatus("sent", "message sent");
       Serial.println("recording completed");
       Serial.flush();
-      delay(5000);
+      restartAwareDelay(5000);
       return;
     }
     if (result.status == ModeRunStatus::Aborted) {
@@ -1336,7 +1377,7 @@ class HardwareRecordingOps : public RecordingOps {
       Serial.print("recording aborted: ");
       Serial.println("abort");
       Serial.flush();
-      delay(5000);
+      restartAwareDelay(5000);
       return;
     }
 
@@ -1354,7 +1395,7 @@ class HardwareRecordingOps : public RecordingOps {
       Serial.println(recording_failure_detail_);
     }
     Serial.flush();
-    delay(5000);
+    restartAwareDelay(5000);
   }
 
   void setCpuForRecording() override {
@@ -1402,13 +1443,13 @@ class HardwareRecordingOps : public RecordingOps {
     size_t bytes_written = 0;
     const uint32_t start = millis();
     while (buttonADown() && millis() - start < kMaxRecordingMs) {
-      M5.update();
+      pollControls();
       const bool got =
           M5.Mic.record(reinterpret_cast<int16_t*>(g_pcm_buffer),
                         kMicSamplesPerRead,
                         kSampleRate);
       if (!got) {
-        delay(2);
+        restartAwareDelay(2);
         continue;
       }
       const size_t written = file.write(g_pcm_buffer, sizeof(g_pcm_buffer));
@@ -1562,6 +1603,8 @@ void setup() {
   M5.begin(cfg);
 
   pinMode(static_cast<int>(kBtnAWakePin), INPUT);
+  pinMode(static_cast<int>(kBtnBPin), INPUT);
+  g_btn_b_was_down = buttonBDown();
   ledcSetup(0, 2000, 8);
   ledcAttachPin(kBuzzerPin, 0);
   ledcWriteTone(0, 0);
@@ -1574,7 +1617,7 @@ void setup() {
   const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
   if (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
     drawBootScreen();
-    delay(kBootSplashMs);
+    restartAwareDelay(kBootSplashMs);
   }
 
   if (wake_cause == ESP_SLEEP_WAKEUP_TIMER) {

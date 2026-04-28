@@ -29,13 +29,11 @@ struct GlobalState {
   Mode currentMode = Mode::DeepSleep;
   uint32_t checkDelayMs = kInitialCheckDelayMs;
   char lastMessageId[kLastMessageIdBytes] = {0};
-  size_t assistantMessageCount = 0;
-  size_t assistantMessageIndex = 0;
+  bool hasAssistantMessage = false;
 };
 
 struct AssistantCheckResult {
   bool hasNewAssistantMessages = false;
-  size_t assistantMessageCount = 0;
   std::string newestMessageId;
   std::vector<std::string> assistantMessages;
 };
@@ -67,10 +65,8 @@ void advanceCheckDelay(GlobalState* state,
                        uint32_t initialDelayMs = kInitialCheckDelayMs,
                        uint32_t maxDelayMs = kMaxCheckDelayMs);
 
-bool hasUnreadAssistantMessages(const GlobalState& state);
-void clearAssistantMessages(GlobalState* state);
-bool setAssistantMessages(GlobalState* state, size_t count, size_t index);
-bool advanceAssistantMessageIndex(GlobalState* state);
+bool hasAssistantMessage(const GlobalState& state);
+void setHasAssistantMessage(GlobalState* state, bool hasAssistantMessage);
 
 void beginRecordingTurn(GlobalState* state);
 bool commitRecordingMessageSent(GlobalState* state, const std::string& userMessageId);

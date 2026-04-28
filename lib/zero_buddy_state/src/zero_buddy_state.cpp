@@ -93,45 +93,18 @@ void advanceCheckDelay(GlobalState* state,
   state->checkDelayMs = nextCheckDelay(state->checkDelayMs, initialDelayMs, maxDelayMs);
 }
 
-bool hasUnreadAssistantMessages(const GlobalState& state) {
-  return state.assistantMessageIndex < state.assistantMessageCount;
+bool hasAssistantMessage(const GlobalState& state) {
+  return state.hasAssistantMessage;
 }
 
-void clearAssistantMessages(GlobalState* state) {
+void setHasAssistantMessage(GlobalState* state, bool hasAssistantMessage) {
   if (!hasState(state)) {
     return;
   }
-  state->assistantMessageCount = 0;
-  state->assistantMessageIndex = 0;
+  state->hasAssistantMessage = hasAssistantMessage;
 }
 
-bool setAssistantMessages(GlobalState* state, size_t count, size_t index) {
-  if (!hasState(state) || index > count) {
-    return false;
-  }
-  state->assistantMessageCount = count;
-  state->assistantMessageIndex = index;
-  return true;
-}
-
-bool advanceAssistantMessageIndex(GlobalState* state) {
-  if (!hasState(state)) {
-    return false;
-  }
-  if (!hasUnreadAssistantMessages(*state)) {
-    state->assistantMessageIndex = state->assistantMessageCount;
-    return false;
-  }
-  ++state->assistantMessageIndex;
-  if (state->assistantMessageIndex > state->assistantMessageCount) {
-    state->assistantMessageIndex = state->assistantMessageCount;
-  }
-  return true;
-}
-
-void beginRecordingTurn(GlobalState* state) {
-  clearAssistantMessages(state);
-}
+void beginRecordingTurn(GlobalState*) {}
 
 bool commitRecordingMessageSent(GlobalState* state, const std::string& userMessageId) {
   if (!hasState(state) || userMessageId.empty() || !messageIdFits(userMessageId)) {
@@ -148,7 +121,7 @@ bool commitAssistantCheck(GlobalState* state, const AssistantCheckResult& result
   if (!hasState(state)) {
     return false;
   }
-  if (!result.hasNewAssistantMessages && result.assistantMessageCount != 0) {
+  if (!result.hasNewAssistantMessages && !result.assistantMessages.empty()) {
     return false;
   }
   if (!result.newestMessageId.empty() && !messageIdFits(result.newestMessageId)) {
@@ -156,17 +129,7 @@ bool commitAssistantCheck(GlobalState* state, const AssistantCheckResult& result
   }
 
   if (result.hasNewAssistantMessages) {
-    if (result.assistantMessageCount == 0) {
-      return false;
-    }
-    if (state->assistantMessageCount + result.assistantMessageCount <
-        state->assistantMessageCount) {
-      return false;
-    }
-    const size_t next_count = state->assistantMessageCount + result.assistantMessageCount;
-    const size_t next_index = std::min(state->assistantMessageIndex,
-                                       state->assistantMessageCount);
-    if (!setAssistantMessages(state, next_count, next_index)) {
+    if (result.assistantMessages.empty()) {
       return false;
     }
     resetCheckDelay(state);

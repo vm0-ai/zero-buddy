@@ -255,8 +255,11 @@ void test_check_assistant_main_commits_new_messages() {
 
   FakeCheckOps ops;
   ops.poll_result.hasNewAssistantMessages = true;
-  ops.poll_result.assistantMessageCount = 2;
+  ops.poll_result.assistantMessages = {"first", "second"};
   ops.poll_result.newestMessageId = "assistant-2";
+  ops.on_write = [&]() {
+    zero_buddy::state::setHasAssistantMessage(&state, true);
+  };
 
   CheckAssistantMessageMode mode(&state, &ops);
   assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
@@ -264,20 +267,31 @@ void test_check_assistant_main_commits_new_messages() {
   TEST_ASSERT_EQUAL_STRING("cpu-network,wifi,poll:user-1,append-assistant-message",
                            joinCalls(ops.calls).c_str());
   TEST_ASSERT_EQUAL_STRING("assistant-2", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(2, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(zero_buddy::state::kInitialCheckDelayMs, state.checkDelayMs);
 }
 
-void test_check_assistant_appends_new_messages_without_resetting_existing_queue() {
+void test_check_assistant_skips_polling_without_last_message_id() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+
+  FakeCheckOps ops;
+  CheckAssistantMessageMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
+
+  TEST_ASSERT_EQUAL_STRING("", joinCalls(ops.calls).c_str());
+  TEST_ASSERT_EQUAL_UINT32(60UL * 1000UL, state.checkDelayMs);
+  TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
+}
+
+void test_check_assistant_preserves_existing_message_presence() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   zero_buddy::state::setLastMessageId(&state, "assistant-1");
-  zero_buddy::state::setAssistantMessages(&state, 1, 0);
+  zero_buddy::state::setHasAssistantMessage(&state, true);
   state.checkDelayMs = 4UL * 60UL * 1000UL;
 
   FakeCheckOps ops;
   ops.poll_result.hasNewAssistantMessages = true;
-  ops.poll_result.assistantMessageCount = 2;
+  ops.poll_result.assistantMessages = {"next"};
   ops.poll_result.newestMessageId = "assistant-3";
 
   CheckAssistantMessageMode mode(&state, &ops);
@@ -286,8 +300,7 @@ void test_check_assistant_appends_new_messages_without_resetting_existing_queue(
   TEST_ASSERT_EQUAL_STRING("cpu-network,wifi,poll:assistant-1,append-assistant-message",
                            joinCalls(ops.calls).c_str());
   TEST_ASSERT_EQUAL_STRING("assistant-3", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(3, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(zero_buddy::state::kInitialCheckDelayMs, state.checkDelayMs);
 }
 
@@ -298,7 +311,6 @@ void test_check_assistant_main_without_new_messages_advances_backoff() {
 
   FakeCheckOps ops;
   ops.poll_result.hasNewAssistantMessages = false;
-  ops.poll_result.assistantMessageCount = 0;
   ops.poll_result.newestMessageId = "user-1";
 
   CheckAssistantMessageMode mode(&state, &ops);
@@ -317,7 +329,7 @@ void test_check_assistant_storage_failure_does_not_commit_cursor_or_queue() {
   FakeCheckOps ops;
   ops.append_ok = false;
   ops.poll_result.hasNewAssistantMessages = true;
-  ops.poll_result.assistantMessageCount = 3;
+  ops.poll_result.assistantMessages = {"assistant"};
   ops.poll_result.newestMessageId = "assistant-3";
 
   CheckAssistantMessageMode mode(&state, &ops);
@@ -326,7 +338,7 @@ void test_check_assistant_storage_failure_does_not_commit_cursor_or_queue() {
   TEST_ASSERT_EQUAL_STRING("cpu-network,wifi,poll:old,append-assistant-message,cleanup-temp",
                            joinCalls(ops.calls).c_str());
   TEST_ASSERT_EQUAL_STRING("old", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageCount);
+  TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(120UL * 1000UL, state.checkDelayMs);
 }
 
@@ -337,7 +349,7 @@ void test_check_assistant_abort_during_poll_cleans_without_commit() {
 
   FakeCheckOps ops;
   ops.poll_result.hasNewAssistantMessages = true;
-  ops.poll_result.assistantMessageCount = 1;
+  ops.poll_result.assistantMessages = {"assistant"};
   ops.poll_result.newestMessageId = "assistant-1";
 
   CheckAssistantMessageMode mode(&state, &ops);
@@ -357,7 +369,7 @@ void test_check_assistant_abort_during_poll_cleans_without_commit() {
 void test_deep_sleep_main_runs_hibernate_last() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   state.checkDelayMs = 5UL * 60UL * 1000UL;
-  zero_buddy::state::setAssistantMessages(&state, 2, 1);
+  zero_buddy::state::setHasAssistantMessage(&state, true);
 
   FakeDeepSleepOps ops;
   DeepSleepMode mode(&state, &ops);
@@ -386,7 +398,7 @@ void test_deep_sleep_main_never_changes_led() {
 
 void test_deep_sleep_abort_after_screen_off_cancels_timer_without_touching_led() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
-  zero_buddy::state::setAssistantMessages(&state, 1, 0);
+  zero_buddy::state::setHasAssistantMessage(&state, true);
 
   FakeDeepSleepOps ops;
   DeepSleepMode mode(&state, &ops);
@@ -408,12 +420,15 @@ void test_deep_sleep_abort_after_screen_off_cancels_timer_without_touching_led()
 void test_recording_main_sends_message_and_commits_cursor() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   zero_buddy::state::setLastMessageId(&state, "old");
-  zero_buddy::state::setAssistantMessages(&state, 2, 0);
+  zero_buddy::state::setHasAssistantMessage(&state, true);
   state.checkDelayMs = 4UL * 60UL * 1000UL;
 
   FakeRecordingOps ops;
   ops.asr_text = "turn on the light";
   ops.sent_message_id = "user-2";
+  ops.on_clear = [&]() {
+    zero_buddy::state::setHasAssistantMessage(&state, false);
+  };
 
   RecordingMode mode(&state, &ops);
   assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
@@ -424,8 +439,7 @@ void test_recording_main_sends_message_and_commits_cursor() {
       joinCalls(ops.calls).c_str());
   TEST_ASSERT_EQUAL_STRING("user-2", zero_buddy::state::copyLastMessageId(state).c_str());
   TEST_ASSERT_EQUAL_UINT32(zero_buddy::state::kInitialCheckDelayMs, state.checkDelayMs);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
+  TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
 }
 
 void test_recording_voice_to_text_failure_deletes_voice_without_cursor_commit() {
@@ -509,7 +523,8 @@ void test_recording_invalid_returned_message_id_fails_without_mutating_cursor() 
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_check_assistant_main_commits_new_messages);
-  RUN_TEST(test_check_assistant_appends_new_messages_without_resetting_existing_queue);
+  RUN_TEST(test_check_assistant_skips_polling_without_last_message_id);
+  RUN_TEST(test_check_assistant_preserves_existing_message_presence);
   RUN_TEST(test_check_assistant_main_without_new_messages_advances_backoff);
   RUN_TEST(test_check_assistant_storage_failure_does_not_commit_cursor_or_queue);
   RUN_TEST(test_check_assistant_abort_during_poll_cleans_without_commit);

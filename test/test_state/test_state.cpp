@@ -8,7 +8,6 @@ namespace {
 
 using zero_buddy::state::AssistantCheckResult;
 using zero_buddy::state::Event;
-using zero_buddy::state::GlobalState;
 using zero_buddy::state::Mode;
 
 void assertMode(Mode expected, Mode actual) {
@@ -21,9 +20,7 @@ void test_default_global_state() {
   TEST_ASSERT_EQUAL_UINT32(zero_buddy::state::kInitialCheckDelayMs, state.checkDelayMs);
   TEST_ASSERT_FALSE(zero_buddy::state::hasLastMessageId(state));
   TEST_ASSERT_EQUAL_STRING("", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
-  TEST_ASSERT_FALSE(zero_buddy::state::hasUnreadAssistantMessages(state));
+  TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
 }
 
 void test_message_cursor_copy_and_truncation() {
@@ -61,40 +58,24 @@ void test_check_delay_backoff() {
   TEST_ASSERT_EQUAL_UINT32(zero_buddy::state::kInitialCheckDelayMs, state.checkDelayMs);
 }
 
-void test_assistant_queue_helpers() {
+void test_assistant_message_flag_helper() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
 
-  TEST_ASSERT_TRUE(zero_buddy::state::setAssistantMessages(&state, 3, 0));
-  TEST_ASSERT_TRUE(zero_buddy::state::hasUnreadAssistantMessages(state));
-  TEST_ASSERT_EQUAL_UINT(3, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
-
-  TEST_ASSERT_TRUE(zero_buddy::state::advanceAssistantMessageIndex(&state));
-  TEST_ASSERT_EQUAL_UINT(1, state.assistantMessageIndex);
-  TEST_ASSERT_TRUE(zero_buddy::state::advanceAssistantMessageIndex(&state));
-  TEST_ASSERT_TRUE(zero_buddy::state::advanceAssistantMessageIndex(&state));
-  TEST_ASSERT_FALSE(zero_buddy::state::hasUnreadAssistantMessages(state));
-  TEST_ASSERT_FALSE(zero_buddy::state::advanceAssistantMessageIndex(&state));
-  TEST_ASSERT_EQUAL_UINT(3, state.assistantMessageIndex);
-
-  TEST_ASSERT_FALSE(zero_buddy::state::setAssistantMessages(&state, 2, 3));
-  TEST_ASSERT_EQUAL_UINT(3, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(3, state.assistantMessageIndex);
-
-  zero_buddy::state::clearAssistantMessages(&state);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
+  TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
+  zero_buddy::state::setHasAssistantMessage(&state, true);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
+  zero_buddy::state::setHasAssistantMessage(&state, false);
+  TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
 }
 
 void test_recording_turn_and_commit() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
-  TEST_ASSERT_TRUE(zero_buddy::state::setAssistantMessages(&state, 2, 1));
+  zero_buddy::state::setHasAssistantMessage(&state, true);
   TEST_ASSERT_TRUE(zero_buddy::state::setLastMessageId(&state, "old-message"));
   state.checkDelayMs = 8UL * 60UL * 1000UL;
 
   zero_buddy::state::beginRecordingTurn(&state);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_STRING("old-message", zero_buddy::state::copyLastMessageId(state).c_str());
   TEST_ASSERT_EQUAL_UINT32(8UL * 60UL * 1000UL, state.checkDelayMs);
 
@@ -121,50 +102,28 @@ void test_recording_commit_rejects_overlong_id_without_mutating() {
 void test_recording_abort_does_not_mutate_global_state() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   TEST_ASSERT_TRUE(zero_buddy::state::setLastMessageId(&state, "old"));
-  TEST_ASSERT_TRUE(zero_buddy::state::setAssistantMessages(&state, 2, 0));
+  zero_buddy::state::setHasAssistantMessage(&state, true);
   state.checkDelayMs = 2UL * 60UL * 1000UL;
 
   zero_buddy::state::abortRecording(&state);
   TEST_ASSERT_EQUAL_STRING("old", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(2, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(2UL * 60UL * 1000UL, state.checkDelayMs);
 }
 
-void test_commit_assistant_check_with_new_messages() {
+void test_commit_assistant_check_with_new_messages_does_not_own_presence_flag() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   TEST_ASSERT_TRUE(zero_buddy::state::setLastMessageId(&state, "user-1"));
   state.checkDelayMs = 4UL * 60UL * 1000UL;
 
   AssistantCheckResult result;
   result.hasNewAssistantMessages = true;
-  result.assistantMessageCount = 2;
+  result.assistantMessages = {"hello", "world"};
   result.newestMessageId = "assistant-2";
 
   TEST_ASSERT_TRUE(zero_buddy::state::commitAssistantCheck(&state, result));
   TEST_ASSERT_EQUAL_STRING("assistant-2", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(2, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
-  TEST_ASSERT_TRUE(zero_buddy::state::hasUnreadAssistantMessages(state));
-  TEST_ASSERT_EQUAL_UINT32(zero_buddy::state::kInitialCheckDelayMs, state.checkDelayMs);
-}
-
-void test_commit_assistant_check_appends_to_existing_messages() {
-  auto state = zero_buddy::state::makeDefaultGlobalState();
-  TEST_ASSERT_TRUE(zero_buddy::state::setLastMessageId(&state, "assistant-1"));
-  TEST_ASSERT_TRUE(zero_buddy::state::setAssistantMessages(&state, 1, 0));
-  state.checkDelayMs = 4UL * 60UL * 1000UL;
-
-  AssistantCheckResult result;
-  result.hasNewAssistantMessages = true;
-  result.assistantMessageCount = 2;
-  result.newestMessageId = "assistant-3";
-
-  TEST_ASSERT_TRUE(zero_buddy::state::commitAssistantCheck(&state, result));
-  TEST_ASSERT_EQUAL_STRING("assistant-3", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(3, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
-  TEST_ASSERT_TRUE(zero_buddy::state::hasUnreadAssistantMessages(state));
+  TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(zero_buddy::state::kInitialCheckDelayMs, state.checkDelayMs);
 }
 
@@ -175,66 +134,71 @@ void test_commit_assistant_check_without_new_messages_advances_backoff() {
 
   AssistantCheckResult result;
   result.hasNewAssistantMessages = false;
-  result.assistantMessageCount = 0;
   result.newestMessageId = "user-1";
 
   TEST_ASSERT_TRUE(zero_buddy::state::commitAssistantCheck(&state, result));
   TEST_ASSERT_EQUAL_STRING("user-1", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(0, state.assistantMessageIndex);
+  TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(120UL * 1000UL, state.checkDelayMs);
 }
 
 void test_commit_assistant_check_rejects_invalid_results_without_mutating() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   TEST_ASSERT_TRUE(zero_buddy::state::setLastMessageId(&state, "old"));
-  TEST_ASSERT_TRUE(zero_buddy::state::setAssistantMessages(&state, 1, 0));
+  zero_buddy::state::setHasAssistantMessage(&state, true);
   state.checkDelayMs = 60UL * 1000UL;
 
-  AssistantCheckResult invalid_count;
-  invalid_count.hasNewAssistantMessages = false;
-  invalid_count.assistantMessageCount = 1;
-  invalid_count.newestMessageId = "new";
-  TEST_ASSERT_FALSE(zero_buddy::state::commitAssistantCheck(&state, invalid_count));
+  AssistantCheckResult invalid_empty_new;
+  invalid_empty_new.hasNewAssistantMessages = true;
+  invalid_empty_new.newestMessageId = "new";
+  TEST_ASSERT_FALSE(zero_buddy::state::commitAssistantCheck(&state, invalid_empty_new));
   TEST_ASSERT_EQUAL_STRING("old", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(1, state.assistantMessageCount);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
+  TEST_ASSERT_EQUAL_UINT32(60UL * 1000UL, state.checkDelayMs);
+
+  AssistantCheckResult invalid_non_empty_empty_check;
+  invalid_non_empty_empty_check.hasNewAssistantMessages = false;
+  invalid_non_empty_empty_check.assistantMessages = {"unexpected"};
+  invalid_non_empty_empty_check.newestMessageId = "new";
+  TEST_ASSERT_FALSE(zero_buddy::state::commitAssistantCheck(&state,
+                                                            invalid_non_empty_empty_check));
+  TEST_ASSERT_EQUAL_STRING("old", zero_buddy::state::copyLastMessageId(state).c_str());
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(60UL * 1000UL, state.checkDelayMs);
 
   AssistantCheckResult invalid_id;
   invalid_id.hasNewAssistantMessages = true;
-  invalid_id.assistantMessageCount = 2;
+  invalid_id.assistantMessages = {"assistant"};
   invalid_id.newestMessageId = std::string(zero_buddy::state::kLastMessageIdBytes, 'x');
   TEST_ASSERT_FALSE(zero_buddy::state::commitAssistantCheck(&state, invalid_id));
   TEST_ASSERT_EQUAL_STRING("old", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(1, state.assistantMessageCount);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(60UL * 1000UL, state.checkDelayMs);
 }
 
 void test_assistant_check_abort_does_not_mutate_global_state() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   TEST_ASSERT_TRUE(zero_buddy::state::setLastMessageId(&state, "old"));
-  TEST_ASSERT_TRUE(zero_buddy::state::setAssistantMessages(&state, 3, 1));
+  zero_buddy::state::setHasAssistantMessage(&state, true);
   state.checkDelayMs = 120UL * 1000UL;
 
   zero_buddy::state::abortAssistantCheck(&state);
   TEST_ASSERT_EQUAL_STRING("old", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT(3, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(1, state.assistantMessageIndex);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(120UL * 1000UL, state.checkDelayMs);
 }
 
 void test_deep_sleep_plan_and_abort() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   state.checkDelayMs = 5UL * 60UL * 1000UL;
-  TEST_ASSERT_TRUE(zero_buddy::state::setAssistantMessages(&state, 2, 1));
+  zero_buddy::state::setHasAssistantMessage(&state, true);
 
   const auto plan = zero_buddy::state::makeDeepSleepPlan(state);
   TEST_ASSERT_EQUAL_UINT32(5UL * 60UL * 1000UL, plan.rtcDelayMs);
 
   zero_buddy::state::abortDeepSleep(&state);
   TEST_ASSERT_EQUAL_UINT32(5UL * 60UL * 1000UL, state.checkDelayMs);
-  TEST_ASSERT_EQUAL_UINT(2, state.assistantMessageCount);
-  TEST_ASSERT_EQUAL_UINT(1, state.assistantMessageIndex);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
 }
 
 void test_state_transitions() {
@@ -274,12 +238,11 @@ int main() {
   RUN_TEST(test_default_global_state);
   RUN_TEST(test_message_cursor_copy_and_truncation);
   RUN_TEST(test_check_delay_backoff);
-  RUN_TEST(test_assistant_queue_helpers);
+  RUN_TEST(test_assistant_message_flag_helper);
   RUN_TEST(test_recording_turn_and_commit);
   RUN_TEST(test_recording_commit_rejects_overlong_id_without_mutating);
   RUN_TEST(test_recording_abort_does_not_mutate_global_state);
-  RUN_TEST(test_commit_assistant_check_with_new_messages);
-  RUN_TEST(test_commit_assistant_check_appends_to_existing_messages);
+  RUN_TEST(test_commit_assistant_check_with_new_messages_does_not_own_presence_flag);
   RUN_TEST(test_commit_assistant_check_without_new_messages_advances_backoff);
   RUN_TEST(test_commit_assistant_check_rejects_invalid_results_without_mutating);
   RUN_TEST(test_assistant_check_abort_does_not_mutate_global_state);

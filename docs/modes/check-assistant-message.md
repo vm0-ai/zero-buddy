@@ -12,7 +12,6 @@ This mode does not own display rendering or direct LED operations. It also does 
 - Wi-Fi connection setup needed for HTTP communication.
 - Assistant message polling.
 - Appending fetched assistant messages through `append_assistant_message`.
-- Updating `assistantMessageCount` and `assistantMessageIndex`.
 - Updating `lastMessageId` after a successful poll.
 - Updating the next check backoff.
 - Keeping partial LittleFS writes and global state from becoming dirty if aborted.
@@ -40,8 +39,8 @@ It does not own:
    - If Wi-Fi cannot be connected, finish the mode as a failed or empty check and let the state machine return to `DeepSleep`.
 
 3. Query latest assistant messages.
-   - Use `GlobalState.lastMessageId` as `sinceId` when it is present.
-   - If `lastMessageId` is empty, query without `sinceId` and treat the result as the baseline/latest cursor according to the API behavior we choose later.
+   - If `GlobalState.lastMessageId` is empty, skip polling entirely.
+   - Otherwise use `GlobalState.lastMessageId` as `sinceId`.
    - The query result should identify:
      - the newest message id observed,
      - the assistant messages that should be stored,
@@ -49,9 +48,8 @@ It does not own:
 
 4. Append result to LittleFS and update global queue state.
    - Store assistant message bodies through `append_assistant_message`.
+   - The helper updates `GlobalState.hasAssistantMessage`.
    - The helper owns the LED transition: if LittleFS had no unread assistant message before the append, it turns the LED on; otherwise it leaves the LED alone.
-   - Update `GlobalState.assistantMessageCount`.
-   - Update `GlobalState.assistantMessageIndex`.
    - If new assistant messages are appended, existing unread messages remain in place and the new messages are added after them.
    - These writes should be committed in an order that avoids dirty state if the device is interrupted.
 
@@ -86,7 +84,7 @@ Typical trigger:
 - Close any open LittleFS file handles owned by this mode.
 - Delete or ignore temporary files created by an incomplete poll.
 - Avoid publishing partially written assistant queue metadata.
-- Avoid advancing `assistantMessageCount` or `assistantMessageIndex` unless the corresponding message files are fully written.
+- Avoid setting `hasAssistantMessage` unless the corresponding message files are fully written.
 - Avoid advancing `lastMessageId` unless the poll result has been fully accepted.
 - Avoid updating `checkDelayMs` from a partial or aborted check.
 - Leave the mode in a state where another mode can be entered immediately.
@@ -112,7 +110,7 @@ Recommended order:
 2. Validate all files were written successfully.
 3. Rename or promote temporary files into their final paths.
 4. Update assistant queue metadata.
-5. Update `assistantMessageCount` and `assistantMessageIndex`.
+5. Update `hasAssistantMessage`.
 6. Update `lastMessageId`.
 7. Update `checkDelayMs`.
 

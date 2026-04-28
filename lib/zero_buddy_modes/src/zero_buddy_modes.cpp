@@ -39,6 +39,11 @@ ModeRunResult CheckAssistantMessageMode::main() {
     return abortedResult();
   }
 
+  if (!state::hasLastMessageId(*state_)) {
+    advanceBackoffAfterEmptyOrFailedCheck();
+    return completed();
+  }
+
   ops_->setCpuForNetwork();
   if (shouldStop()) {
     return abortedResult();

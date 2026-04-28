@@ -76,9 +76,7 @@ bool writeAssistantQueueManifest(size_t count, size_t index);
 
 bool stateLooksValid(const GlobalState& state) {
   if (state.checkDelayMs == 0 ||
-      state.checkDelayMs > zero_buddy::state::kMaxCheckDelayMs ||
-      state.assistantMessageIndex > state.assistantMessageCount ||
-      state.assistantMessageCount > kMaxAssistantMessages) {
+      state.checkDelayMs > zero_buddy::state::kMaxCheckDelayMs) {
     return false;
   }
   const auto mode = static_cast<uint8_t>(state.currentMode);
@@ -237,35 +235,38 @@ bool readTextFile(const char* path, std::string* value_out) {
   return true;
 }
 
-bool assistant_message_exists() {
+size_t assistant_message_count() {
   std::string manifest_body;
   if (readTextFile(kAssistantQueueManifestPath, &manifest_body)) {
     const auto manifest =
         zero_buddy::parseAssistantQueueManifest(manifest_body, kMaxAssistantMessages);
     if (manifest.ok) {
-      return manifest.index < manifest.count;
+      return std::min(manifest.count, kMaxAssistantMessages);
     }
   }
+  size_t count = 0;
   for (size_t i = 0; i < kMaxAssistantMessages; ++i) {
     const String final_path = assistantMessagePath(i);
     if (LittleFS.exists(final_path.c_str())) {
-      return true;
+      ++count;
     }
   }
-  return false;
+  return count;
 }
 
-bool append_assistant_message(const std::string& value,
-                              size_t index,
-                              size_t queue_count,
-                              size_t queue_index) {
-  if (index >= kMaxAssistantMessages || queue_count > kMaxAssistantMessages ||
-      queue_index > queue_count) {
+bool assistant_message_exists() {
+  return assistant_message_count() > 0;
+}
+
+bool append_assistant_message(const std::string& value) {
+  const size_t index = assistant_message_count();
+  if (index >= kMaxAssistantMessages) {
     return false;
   }
   const bool should_turn_led_on = !assistant_message_exists();
   const String tmp_path = assistantMessageTmpPath(index);
   const String final_path = assistantMessagePath(index);
+  const size_t next_count = index + 1;
   const std::string trimmed = value.substr(0, kMaxAssistantMessageBytes);
   removeIfExists(tmp_path.c_str());
   if (!writeTextFile(tmp_path.c_str(), trimmed)) {
@@ -277,9 +278,11 @@ bool append_assistant_message(const std::string& value,
     removeIfExists(tmp_path.c_str());
     return false;
   }
-  if (!writeAssistantQueueManifest(queue_count, queue_index)) {
+  if (!writeAssistantQueueManifest(next_count, 0)) {
+    removeIfExists(final_path.c_str());
     return false;
   }
+  zero_buddy::state::setHasAssistantMessage(&g_state, true);
   if (should_turn_led_on) {
     setAssistantLedOn();
   }
@@ -288,6 +291,7 @@ bool append_assistant_message(const std::string& value,
 
 bool clear_assistant_message() {
   clearAssistantFiles();
+  zero_buddy::state::setHasAssistantMessage(&g_state, false);
   setAssistantLedOff();
   return true;
 }
@@ -715,33 +719,25 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
     }
     result_out->newestMessageId = parsed.newest_message_id;
     result_out->assistantMessages.clear();
-    const size_t base_count = std::min(g_state.assistantMessageCount, kMaxAssistantMessages);
-    const size_t capacity = kMaxAssistantMessages - base_count;
+    const size_t capacity = kMaxAssistantMessages - assistant_message_count();
     for (const auto& message : parsed.assistant_messages) {
       if (result_out->assistantMessages.size() >= capacity) {
         break;
       }
       result_out->assistantMessages.push_back(message);
     }
-    result_out->assistantMessageCount = result_out->assistantMessages.size();
-    result_out->hasNewAssistantMessages = result_out->assistantMessageCount > 0;
+    result_out->hasNewAssistantMessages = !result_out->assistantMessages.empty();
     return true;
   }
 
   bool appendAssistantMessages(const AssistantCheckResult& result) override {
     cleanupTempFiles();
-    const size_t base_count = g_state.assistantMessageCount;
-    const size_t base_index = std::min(g_state.assistantMessageIndex, base_count);
-    const size_t capacity = kMaxAssistantMessages - std::min(base_count, kMaxAssistantMessages);
+    const size_t capacity = kMaxAssistantMessages - assistant_message_count();
     if (result.assistantMessages.size() > capacity) {
       return false;
     }
-    for (size_t i = 0; i < result.assistantMessages.size(); ++i) {
-      const size_t next_count = base_count + i + 1;
-      if (!append_assistant_message(result.assistantMessages[i],
-                                    base_count + i,
-                                    next_count,
-                                    base_index)) {
+    for (const auto& message : result.assistantMessages) {
+      if (!append_assistant_message(message)) {
         return false;
       }
     }
@@ -996,6 +992,7 @@ void setup() {
   setCpu(kRecordingCpuMhz);
   LittleFS.begin(true);
   ensureGlobalStateInitialized();
+  zero_buddy::state::setHasAssistantMessage(&g_state, assistant_message_exists());
 
   const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
   if (wake_cause == ESP_SLEEP_WAKEUP_TIMER) {

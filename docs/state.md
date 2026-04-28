@@ -58,8 +58,7 @@ struct GlobalState {
   uint32_t checkDelayMs;
   char lastMessageId[160];
 
-  size_t assistantMessageCount;
-  size_t assistantMessageIndex;
+  bool hasAssistantMessage;
 };
 ```
 
@@ -79,14 +78,10 @@ struct GlobalState {
   - `CheckAssistantMessage` writes it after polling, using the newest message id it has observed.
   - This state is global because both modes advance the same message cursor.
 
-- `assistantMessageCount`
-  - Number of assistant messages currently stored for later reading.
-  - Written by `CheckAssistantMessage` after a successful poll.
-
-- `assistantMessageIndex`
-  - Index of the next assistant message to read.
-  - Written by `CheckAssistantMessage` when it appends to the stored assistant message set.
-  - Read later by the message-reading flow.
+- `hasAssistantMessage`
+  - Boolean presence flag for stored assistant messages.
+  - It only records whether LittleFS currently has at least one assistant message.
+  - It is maintained by `append_assistant_message` and `clear_assistant_message`, not directly by mode logic.
 
 Mode-local state, such as audio buffers, network request handles, temporary file handles, and abort flags, should stay inside the owning mode instead of being added to `GlobalState`.
 
@@ -97,11 +92,12 @@ Some global state is also persisted because the device spends most of its time i
 - RTC memory
   - `checkDelayMs`
   - `lastMessageId`
+  - `hasAssistantMessage`
   - validation magic/version
 
 - LittleFS
   - assistant message files
-  - assistant queue metadata, including `assistantMessageCount` and `assistantMessageIndex`
+  - assistant queue metadata used internally by the storage helpers
   - temporary recording or network response files, if a mode needs them internally
 
 `CheckAssistantMessage` owns appending assistant messages through `append_assistant_message`. `Recording` owns clearing assistant messages through `clear_assistant_message`. The assistant LED is not controlled directly by modes; it is updated inside those helpers so it reflects whether LittleFS currently has unread assistant messages.

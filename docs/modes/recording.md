@@ -48,9 +48,8 @@ It does not own:
    - Do not clear `lastMessageId` at this step; it remains the current message cursor until a new user message is successfully sent.
 
 4. Clear stored assistant messages.
-   - Set `GlobalState.assistantMessageCount = 0`.
-   - Set `GlobalState.assistantMessageIndex = 0`.
    - Remove assistant message files and assistant queue metadata from LittleFS.
+   - Set `GlobalState.hasAssistantMessage = false`.
    - Turn the assistant-message LED off through `clear_assistant_message`.
    - This starts a fresh user turn and discards previously unread assistant messages.
 

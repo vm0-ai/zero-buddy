@@ -11,13 +11,13 @@ The methods here are intentionally small and deterministic. They do not touch Wi
   - Starts in `DeepSleep`.
   - Sets `checkDelayMs` to 30 seconds.
   - Clears `lastMessageId`.
-  - Clears assistant message queue counters.
+  - Sets `hasAssistantMessage = false`.
 
 - `setMode(state, mode)`
   - Updates `currentMode`.
 
-- `hasUnreadAssistantMessages(state)`
-  - Returns whether `assistantMessageIndex < assistantMessageCount`.
+- `hasAssistantMessage(state)`
+  - Returns whether assistant message storage currently has any message.
 
 ## Message Cursor
 
@@ -50,24 +50,16 @@ The methods here are intentionally small and deterministic. They do not touch Wi
 - `nextCheckDelay(currentDelayMs)`
   - Pure backoff calculation helper.
 
-## Assistant Queue
+## Assistant Message Presence
 
-- `clearAssistantMessages(state)`
-  - Sets `assistantMessageCount = 0`.
-  - Sets `assistantMessageIndex = 0`.
-
-- `setAssistantMessages(state, count, index)`
-  - Sets queue counters after assistant files have been committed.
-  - Rejects `index > count`.
-
-- `advanceAssistantMessageIndex(state)`
-  - Moves to the next assistant message if one is available.
-  - Keeps `assistantMessageIndex <= assistantMessageCount`.
+- `setHasAssistantMessage(state, hasAssistantMessage)`
+  - Sets the boolean assistant message presence flag.
+  - Firmware should call this from `append_assistant_message` and `clear_assistant_message`.
 
 ## Recording Commit And Abort
 
 - `beginRecordingTurn(state)`
-  - Clears assistant message queue counters for a fresh user turn.
+  - Does not clear assistant message presence; `clear_assistant_message` owns that.
   - Does not clear `lastMessageId`.
   - Does not change `checkDelayMs`.
 
@@ -85,9 +77,9 @@ The methods here are intentionally small and deterministic. They do not touch Wi
 - `commitAssistantCheck(state, result)`
   - Accepts a completed poll.
   - Updates `lastMessageId` when `result.newestMessageId` is present.
-  - If new assistant messages were fetched, appends to queue counters and resets backoff.
+  - If new assistant messages were fetched, resets backoff.
   - If no new assistant messages were fetched, advances backoff.
-  - Rejects invalid queue metadata.
+  - Does not update `hasAssistantMessage`; `append_assistant_message` owns that.
 
 - `abortAssistantCheck(state)`
   - No-op for global state.

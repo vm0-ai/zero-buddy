@@ -30,6 +30,7 @@ struct AssistantQueueManifest {
   bool ok = false;
   size_t count = 0;
   size_t index = 0;
+  size_t scroll_top = 0;
   bool waiting = false;
   uint8_t next_delay_index = 0;
   std::string last_seen_message_id;
@@ -168,7 +169,8 @@ std::string buildAssistantQueueManifest(size_t count,
                                         size_t index,
                                         bool waiting,
                                         uint8_t next_delay_index,
-                                        std::string last_seen_message_id);
+                                        std::string last_seen_message_id,
+                                        size_t scroll_top = 0);
 AssistantQueueManifest parseAssistantQueueManifest(std::string body, size_t max_count);
 void appendU32(std::vector<uint8_t>& out, uint32_t value);
 std::vector<uint8_t> buildStreamAudioPacket(const uint8_t* data, size_t data_len, bool is_final);

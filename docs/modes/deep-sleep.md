@@ -2,7 +2,7 @@
 
 `DeepSleep` is the low-power resting mode. Its job is to prepare the device for sleep, configure the next RTC wake, expose BtnA as a wake source, and then enter ESP32 deep sleep.
 
-This mode owns only the screen-off power action, not display rendering or screen-on behavior. It also does not decide the next mode directly. If the RTC wakes the device, the state machine enters `CheckAssistantMessage`. If BtnA wakes the device and is held long enough, the state machine enters `Recording`.
+This mode owns only the screen-off power action, not display rendering or screen-on behavior. It also does not decide the next mode directly. If the RTC wakes the device, the state machine enters `CheckAssistantMessage`. If BtnA wakes the device, the boot path measures the press: a short press enters `Read`, and a long press enters `Recording`.
 
 ## Owned Work
 
@@ -35,7 +35,7 @@ It does not own:
 
 2. Configure BtnA as a wake source.
    - BtnA must be able to wake the device from ESP32 deep sleep.
-   - The wake itself does not prove a long press; the firmware must validate the hold after boot.
+  - The wake itself does not prove whether the user intended a short press or long press; the firmware must validate the hold after boot.
 
 3. Turn the screen off.
    - Blank the display and set brightness to `0`.
@@ -58,6 +58,8 @@ Typical trigger:
 - BtnA long press is detected while `DeepSleep.main()` is still running.
 - The state machine calls `DeepSleep.abort("btn_a_long_press")`.
 - After `abort` completes, the state machine switches to `Recording`.
+
+For a BtnA wake that is released before the long-press threshold, the restarted firmware enters `Read` instead of aborting a still-running `DeepSleep.main()`.
 
 ## Abort Requirements
 
@@ -94,5 +96,6 @@ There are two distinct phases:
   - The firmware cannot run code or measure a long press while asleep.
   - BtnA can only act as a wake source.
   - After wake, firmware starts again and must check whether BtnA is still held long enough to count as a long press.
+  - If it is not held long enough, the wake is treated as a short press and enters `Read`.
 
 Because of this, `DeepSleep.main()` should keep the pre-sleep preparation short and abortable, and the boot path should validate BtnA hold duration after a button wake.

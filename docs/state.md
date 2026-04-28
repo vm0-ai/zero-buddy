@@ -4,12 +4,13 @@ This document describes the core state design for the rewritten AI voice assista
 
 ## Core Modes
 
-The rewritten firmware starts with three core modes:
+The rewritten firmware starts with four core modes:
 
 - `DeepSleep`
   - The device is in deep sleep.
   - Only required wake sources are enabled, such as the RTC timer and BtnA.
   - RTC wake transitions to `CheckAssistantMessage`.
+  - BtnA short press transitions to `Read`.
   - BtnA long press transitions to `Recording`.
 
 - `CheckAssistantMessage`
@@ -20,9 +21,17 @@ The rewritten firmware starts with three core modes:
 
 - `Recording`
   - Handles audio recording.
-  - Entered from `DeepSleep` or `CheckAssistantMessage` via BtnA long press.
+  - Entered from `DeepSleep`, `CheckAssistantMessage`, or `Read` via BtnA long press.
   - After recording completes, it automatically transitions to `DeepSleep`.
   - Whether ASR and message sending are part of the `Recording` exit flow will be defined in a later design pass.
+
+- `Read`
+  - Lets the user read stored assistant messages.
+  - Entered from `DeepSleep` via BtnA short press.
+  - Turns the screen on, sets the CPU to a display-safe frequency, and renders either the current assistant message or an empty state.
+  - BtnA short press scrolls the current message, then advances through later messages until everything is read.
+  - BtnA long press aborts reading before entering `Recording`.
+  - When reading completes or idles out, it transitions back to `DeepSleep`.
 
 ## Lifecycle Contract
 
@@ -49,6 +58,7 @@ The first rewrite keeps a small global state surface. Global state is reserved f
 enum class Mode {
   DeepSleep,
   CheckAssistantMessage,
+  Read,
   Recording,
 };
 
@@ -98,9 +108,12 @@ Some global state is also persisted because the device spends most of its time i
 - LittleFS
   - assistant message files
   - assistant queue metadata used internally by the storage helpers
+    - message count
+    - current read message index
+    - current read message `scrollTop`
   - temporary recording or network response files, if a mode needs them internally
 
-`CheckAssistantMessage` owns appending assistant messages through `append_assistant_message`. `Recording` owns clearing assistant messages through `clear_assistant_message`. The assistant LED is not controlled directly by modes; it is updated inside those helpers so it reflects whether LittleFS currently has unread assistant messages.
+`CheckAssistantMessage` owns appending assistant messages through `append_assistant_message`. `Recording` owns clearing assistant messages before a new user turn through `clear_assistant_message`. `Read` owns read progress updates and also clears assistant messages through `clear_assistant_message` after the final stored assistant message has been fully read. The assistant LED is not controlled directly by modes; it is updated inside the append/clear helpers so it reflects whether LittleFS currently has assistant messages.
 
 ## Transitions
 
@@ -113,8 +126,12 @@ stateDiagram-v2
     DeepSleep --> CheckAssistantMessage: RTC wake
     CheckAssistantMessage --> DeepSleep: check complete
 
+    DeepSleep --> Read: BtnA short press
+    Read --> DeepSleep: read complete / idle timeout
+
     DeepSleep --> Recording: BtnA long press
     CheckAssistantMessage --> Recording: BtnA long press / abort check
+    Read --> Recording: BtnA long press / abort read
 
     Recording --> DeepSleep: recording complete
 ```
@@ -128,10 +145,19 @@ stateDiagram-v2
 - `BtnALongPress`
   - Starts recording from `DeepSleep`.
   - Aborts the check and starts recording from `CheckAssistantMessage`.
+  - Aborts reading and starts recording from `Read`.
   - No additional behavior is defined in `Recording` yet.
+
+- `BtnAShortPress`
+  - Starts `Read` from `DeepSleep`.
+  - Inside `Read`, this is handled by the mode to scroll the current assistant message or advance to the next assistant message.
 
 - `CheckComplete`
   - Only valid in `CheckAssistantMessage`.
+  - Transitions to `DeepSleep`.
+
+- `ReadComplete`
+  - Only valid in `Read`.
   - Transitions to `DeepSleep`.
 
 - `RecordingComplete`
@@ -148,14 +174,12 @@ A transition follows a fixed sequence:
 4. Update the current mode.
 5. Call the new mode's `enter(context)`.
 
-`CheckAssistantMessage -> Recording` is the only transition that currently requires an explicit mid-flight abort. The check may be performing network work, so it must call `abort("btn_a_long_press")` before entering `Recording`.
+`CheckAssistantMessage -> Recording` and `Read -> Recording` require an explicit mid-flight abort. The check may be performing network work, so it must call `abort("btn_a_long_press")` before entering `Recording`. Read may be waiting for user input or holding file/display resources, so it also aborts first.
 
 ## Initial Scope
 
 The first rewrite pass does not cover:
 
-- Screen wake, sleep, or rendering.
-- Assistant message display styling.
 - Battery UI.
 - Animation and beep feedback.
 - Test modes.

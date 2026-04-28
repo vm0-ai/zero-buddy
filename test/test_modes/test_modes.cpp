@@ -15,6 +15,10 @@ using zero_buddy::modes::DeepSleepOps;
 using zero_buddy::modes::ModeRunError;
 using zero_buddy::modes::ModeRunResult;
 using zero_buddy::modes::ModeRunStatus;
+using zero_buddy::modes::ReadInput;
+using zero_buddy::modes::ReadMode;
+using zero_buddy::modes::ReadOps;
+using zero_buddy::modes::ReadProgress;
 using zero_buddy::modes::RecordingMode;
 using zero_buddy::modes::RecordingOps;
 using zero_buddy::state::AssistantCheckResult;
@@ -139,6 +143,122 @@ struct FakeDeepSleepOps : DeepSleepOps {
 
   void cancelRtcWake() override {
     calls.push_back("cancel-rtc");
+  }
+};
+
+struct FakeReadOps : ReadOps {
+  std::vector<std::string> calls;
+  std::vector<std::string> messages;
+  std::vector<ReadInput> inputs;
+  ReadProgress progress;
+  size_t max_scroll_top = 0;
+  size_t step = 40;
+  bool load_progress_ok = true;
+  bool load_message_ok = true;
+  bool save_ok = true;
+  bool clear_ok = true;
+  std::function<void()> on_screen;
+  std::function<void()> on_cpu;
+  std::function<void()> on_count;
+  std::function<void()> on_render;
+
+  void screenOn() override {
+    calls.push_back("screen-on");
+    if (on_screen) {
+      on_screen();
+    }
+  }
+
+  void setCpuForReading() override {
+    calls.push_back("cpu-read");
+    if (on_cpu) {
+      on_cpu();
+    }
+  }
+
+  size_t storedAssistantMessageCount() override {
+    calls.push_back("count");
+    if (on_count) {
+      on_count();
+    }
+    return messages.size();
+  }
+
+  bool loadReadProgress(ReadProgress* progress_out) override {
+    calls.push_back("load-progress");
+    if (progress_out != nullptr) {
+      *progress_out = progress;
+    }
+    return load_progress_ok;
+  }
+
+  bool loadAssistantMessage(size_t index, std::string* message_out) override {
+    calls.push_back("load:" + std::to_string(index));
+    if (!load_message_ok || index >= messages.size()) {
+      return false;
+    }
+    if (message_out != nullptr) {
+      *message_out = messages[index];
+    }
+    return true;
+  }
+
+  size_t maxScrollTopForMessage(const std::string&) override {
+    calls.push_back("max-scroll");
+    return max_scroll_top;
+  }
+
+  size_t scrollStep() override {
+    calls.push_back("scroll-step");
+    return step;
+  }
+
+  bool saveReadProgress(size_t count, size_t index, size_t scroll_top) override {
+    calls.push_back("save:" + std::to_string(count) + ":" + std::to_string(index) +
+                    ":" + std::to_string(scroll_top));
+    progress.messageIndex = index;
+    progress.scrollTop = scroll_top;
+    return save_ok;
+  }
+
+  bool clearAssistantMessages() override {
+    calls.push_back("clear-assistant-message");
+    return clear_ok;
+  }
+
+  void renderNoAssistantMessage() override {
+    calls.push_back("render-empty");
+    if (on_render) {
+      on_render();
+    }
+  }
+
+  void renderAssistantMessage(size_t index,
+                              size_t,
+                              const std::string&,
+                              size_t scroll_top) override {
+    calls.push_back("render:" + std::to_string(index) + ":" + std::to_string(scroll_top));
+    if (on_render) {
+      on_render();
+    }
+  }
+
+  ReadInput waitForInput(uint32_t timeout_ms) override {
+    calls.push_back("wait:" + std::to_string(timeout_ms));
+    if (inputs.empty()) {
+      return ReadInput::Timeout;
+    }
+    const ReadInput input = inputs.front();
+    inputs.erase(inputs.begin());
+    return input;
+  }
+
+  void cancelIdleTimer() override {
+    calls.push_back("cancel-idle");
+  }
+
+  void closeFiles() override {
+    calls.push_back("close-files");
   }
 };
 
@@ -417,6 +537,120 @@ void test_deep_sleep_abort_after_screen_off_cancels_timer_without_touching_led()
                            joinCalls(ops.calls).c_str());
 }
 
+void test_read_main_without_messages_shows_empty_and_completes() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+
+  FakeReadOps ops;
+  ReadMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
+
+  TEST_ASSERT_EQUAL_STRING("screen-on,cpu-read,count,load-progress,render-empty,wait:15000",
+                           joinCalls(ops.calls).c_str());
+}
+
+void test_read_empty_short_press_resets_idle_timer() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+
+  FakeReadOps ops;
+  ops.inputs = {ReadInput::ShortPress, ReadInput::Timeout};
+
+  ReadMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
+
+  TEST_ASSERT_EQUAL_STRING(
+      "screen-on,cpu-read,count,load-progress,render-empty,wait:15000,"
+      "render-empty,wait:15000",
+      joinCalls(ops.calls).c_str());
+}
+
+void test_read_main_renders_saved_progress_and_scrolls_on_short_press() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+  zero_buddy::state::setHasAssistantMessage(&state, true);
+
+  FakeReadOps ops;
+  ops.messages = {"assistant"};
+  ops.progress.messageIndex = 0;
+  ops.progress.scrollTop = 20;
+  ops.max_scroll_top = 100;
+  ops.step = 40;
+  ops.inputs = {ReadInput::ShortPress, ReadInput::Timeout};
+
+  ReadMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
+
+  TEST_ASSERT_EQUAL_STRING(
+      "screen-on,cpu-read,count,load-progress,load:0,max-scroll,render:0:20,"
+      "wait:15000,max-scroll,scroll-step,save:1:0:60,load:0,max-scroll,"
+      "render:0:60,wait:15000",
+      joinCalls(ops.calls).c_str());
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
+  TEST_ASSERT_EQUAL_UINT(0, ops.progress.messageIndex);
+  TEST_ASSERT_EQUAL_UINT(60, ops.progress.scrollTop);
+}
+
+void test_read_main_advances_to_next_message_when_current_is_fully_scrolled() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+
+  FakeReadOps ops;
+  ops.messages = {"first", "second"};
+  ops.progress.messageIndex = 0;
+  ops.progress.scrollTop = 100;
+  ops.max_scroll_top = 100;
+  ops.inputs = {ReadInput::ShortPress, ReadInput::Timeout};
+
+  ReadMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
+
+  TEST_ASSERT_EQUAL_UINT(1, ops.progress.messageIndex);
+  TEST_ASSERT_EQUAL_UINT(0, ops.progress.scrollTop);
+  TEST_ASSERT_TRUE(joinCalls(ops.calls).find("save:2:1:0") != std::string::npos);
+  TEST_ASSERT_TRUE(joinCalls(ops.calls).find("render:1:0") != std::string::npos);
+}
+
+void test_read_main_completes_when_last_message_is_fully_read() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+
+  FakeReadOps ops;
+  ops.messages = {"last"};
+  ops.progress.messageIndex = 0;
+  ops.progress.scrollTop = 100;
+  ops.max_scroll_top = 100;
+  ops.inputs = {ReadInput::ShortPress};
+
+  ReadMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
+
+  TEST_ASSERT_EQUAL_STRING(
+      "screen-on,cpu-read,count,load-progress,load:0,max-scroll,render:0:100,"
+      "wait:15000,max-scroll,clear-assistant-message,render-empty,wait:15000",
+      joinCalls(ops.calls).c_str());
+}
+
+void test_read_abort_on_long_press_closes_files_without_clearing_messages() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+  zero_buddy::state::setHasAssistantMessage(&state, true);
+
+  FakeReadOps ops;
+  ops.messages = {"assistant"};
+  ops.inputs = {ReadInput::LongPress};
+
+  ReadMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Aborted, ModeRunError::None, mode.main());
+
+  TEST_ASSERT_TRUE(mode.abortRequested());
+  TEST_ASSERT_EQUAL_STRING("btn_a_long_press", mode.abortReason());
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
+  TEST_ASSERT_TRUE(joinCalls(ops.calls).find("cancel-idle") != std::string::npos);
+  TEST_ASSERT_TRUE(joinCalls(ops.calls).find("close-files") != std::string::npos);
+
+  mode.abort("again");
+  const std::string calls_after_repeat_abort = joinCalls(ops.calls);
+  TEST_ASSERT_EQUAL_UINT(calls_after_repeat_abort.find("close-files"),
+                         calls_after_repeat_abort.rfind("close-files"));
+  TEST_ASSERT_EQUAL_UINT(calls_after_repeat_abort.find("cancel-idle"),
+                         calls_after_repeat_abort.rfind("cancel-idle"));
+}
+
 void test_recording_main_sends_message_and_commits_cursor() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   zero_buddy::state::setLastMessageId(&state, "old");
@@ -531,6 +765,12 @@ int main() {
   RUN_TEST(test_deep_sleep_main_runs_hibernate_last);
   RUN_TEST(test_deep_sleep_main_never_changes_led);
   RUN_TEST(test_deep_sleep_abort_after_screen_off_cancels_timer_without_touching_led);
+  RUN_TEST(test_read_main_without_messages_shows_empty_and_completes);
+  RUN_TEST(test_read_empty_short_press_resets_idle_timer);
+  RUN_TEST(test_read_main_renders_saved_progress_and_scrolls_on_short_press);
+  RUN_TEST(test_read_main_advances_to_next_message_when_current_is_fully_scrolled);
+  RUN_TEST(test_read_main_completes_when_last_message_is_fully_read);
+  RUN_TEST(test_read_abort_on_long_press_closes_files_without_clearing_messages);
   RUN_TEST(test_recording_main_sends_message_and_commits_cursor);
   RUN_TEST(test_recording_voice_to_text_failure_deletes_voice_without_cursor_commit);
   RUN_TEST(test_recording_send_failure_does_not_commit_cursor);

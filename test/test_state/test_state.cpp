@@ -188,6 +188,18 @@ void test_assistant_check_abort_does_not_mutate_global_state() {
   TEST_ASSERT_EQUAL_UINT32(120UL * 1000UL, state.checkDelayMs);
 }
 
+void test_read_abort_does_not_mutate_global_state() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+  TEST_ASSERT_TRUE(zero_buddy::state::setLastMessageId(&state, "old"));
+  zero_buddy::state::setHasAssistantMessage(&state, true);
+  state.checkDelayMs = 120UL * 1000UL;
+
+  zero_buddy::state::abortRead(&state);
+  TEST_ASSERT_EQUAL_STRING("old", zero_buddy::state::copyLastMessageId(state).c_str());
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
+  TEST_ASSERT_EQUAL_UINT32(120UL * 1000UL, state.checkDelayMs);
+}
+
 void test_deep_sleep_plan_and_abort() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   state.checkDelayMs = 5UL * 60UL * 1000UL;
@@ -229,6 +241,23 @@ void test_state_transitions() {
   TEST_ASSERT_FALSE(transition.valid);
   TEST_ASSERT_FALSE(zero_buddy::state::applyTransition(&state, transition));
   assertMode(Mode::DeepSleep, state.currentMode);
+
+  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::BtnAShortPress);
+  TEST_ASSERT_TRUE(transition.valid);
+  TEST_ASSERT_TRUE(transition.requiresAbort);
+  assertMode(Mode::Read, transition.nextMode);
+  TEST_ASSERT_TRUE(zero_buddy::state::applyTransition(&state, transition));
+  assertMode(Mode::Read, state.currentMode);
+
+  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::BtnALongPress);
+  TEST_ASSERT_TRUE(transition.valid);
+  TEST_ASSERT_TRUE(transition.requiresAbort);
+  assertMode(Mode::Recording, transition.nextMode);
+
+  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::ReadComplete);
+  TEST_ASSERT_TRUE(transition.valid);
+  TEST_ASSERT_FALSE(transition.requiresAbort);
+  assertMode(Mode::DeepSleep, transition.nextMode);
 }
 
 }  // namespace
@@ -246,6 +275,7 @@ int main() {
   RUN_TEST(test_commit_assistant_check_without_new_messages_advances_backoff);
   RUN_TEST(test_commit_assistant_check_rejects_invalid_results_without_mutating);
   RUN_TEST(test_assistant_check_abort_does_not_mutate_global_state);
+  RUN_TEST(test_read_abort_does_not_mutate_global_state);
   RUN_TEST(test_deep_sleep_plan_and_abort);
   RUN_TEST(test_state_transitions);
   return UNITY_END();

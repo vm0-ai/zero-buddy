@@ -779,12 +779,14 @@ std::string buildAssistantQueueManifest(size_t count,
                                         size_t index,
                                         bool waiting,
                                         uint8_t next_delay_index,
-                                        std::string last_seen_message_id) {
+                                        std::string last_seen_message_id,
+                                        size_t scroll_top) {
   if (index > count) {
     index = count;
   }
   return std::string("{\"count\":") + std::to_string(count) +
          ",\"index\":" + std::to_string(index) +
+         ",\"scrollTop\":" + std::to_string(scroll_top) +
          ",\"waiting\":" + (waiting ? "true" : "false") +
          ",\"next_delay_index\":" + std::to_string(next_delay_index) +
          ",\"last_seen_message_id\":\"" + escapeJsonString(last_seen_message_id) + "\"}";
@@ -794,6 +796,7 @@ AssistantQueueManifest parseAssistantQueueManifest(std::string body, size_t max_
   AssistantQueueManifest manifest;
   size_t count = 0;
   size_t index = 0;
+  size_t scroll_top = 0;
   size_t next_delay_index = 0;
   bool waiting = false;
   if (!extractJsonUnsigned(body, "count", &count) ||
@@ -804,11 +807,15 @@ AssistantQueueManifest parseAssistantQueueManifest(std::string body, size_t max_
     return manifest;
   }
   extractJsonBool(body, "waiting", &waiting);
+  if (!extractJsonUnsigned(body, "scrollTop", &scroll_top)) {
+    extractJsonUnsigned(body, "scroll_top", &scroll_top);
+  }
   extractJsonUnsigned(body, "next_delay_index", &next_delay_index);
 
   manifest.ok = true;
   manifest.count = count;
   manifest.index = index;
+  manifest.scroll_top = scroll_top;
   manifest.waiting = waiting;
   manifest.next_delay_index = static_cast<uint8_t>(std::min<size_t>(next_delay_index, 255));
   manifest.last_seen_message_id = extractJsonString(body, "last_seen_message_id");

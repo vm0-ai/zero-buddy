@@ -1,8 +1,12 @@
 #include "zero_buddy_modes.h"
 
+#include <algorithm>
+
 namespace zero_buddy {
 namespace modes {
 namespace {
+
+constexpr uint32_t kReadIdleTimeoutMs = 15UL * 1000UL;
 
 ModeRunResult completed() {
   ModeRunResult result;
@@ -179,6 +183,176 @@ bool DeepSleepMode::shouldStop() const {
 
 ModeRunResult DeepSleepMode::abortedResult() const {
   return aborted();
+}
+
+ReadMode::ReadMode(state::GlobalState* state, ReadOps* ops)
+    : state_(state), ops_(ops) {}
+
+ModeRunResult ReadMode::main() {
+  if (state_ == nullptr || ops_ == nullptr) {
+    return failed(ModeRunError::InvalidStateCommit);
+  }
+  if (shouldStop()) {
+    return abortedResult();
+  }
+
+  ops_->screenOn();
+  if (shouldStop()) {
+    return abortedResult();
+  }
+
+  ops_->setCpuForReading();
+  if (shouldStop()) {
+    return abortedResult();
+  }
+
+  const size_t count = ops_->storedAssistantMessageCount();
+  if (shouldStop()) {
+    return abortedResult();
+  }
+
+  ReadProgress progress;
+  if (!ops_->loadReadProgress(&progress)) {
+    return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantStorageFailed);
+  }
+  if (shouldStop()) {
+    return abortedResult();
+  }
+
+  if (count == 0) {
+    return renderEmptyUntilIdle();
+  }
+
+  if (progress.messageIndex >= count) {
+    progress.messageIndex = count - 1;
+    progress.scrollTop = 0;
+    if (!persistProgress(count, progress)) {
+      return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantStorageFailed);
+    }
+  }
+
+  while (!shouldStop()) {
+    std::string message;
+    if (!loadCurrentMessage(progress.messageIndex, &message)) {
+      return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantStorageFailed);
+    }
+    if (!clampAndPersistProgress(count, message, &progress)) {
+      return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantStorageFailed);
+    }
+
+    ops_->renderAssistantMessage(progress.messageIndex, count, message, progress.scrollTop);
+    if (shouldStop()) {
+      return abortedResult();
+    }
+    const ReadInput input = ops_->waitForInput(kReadIdleTimeoutMs);
+    if (input == ReadInput::LongPress) {
+      abort("btn_a_long_press");
+      return abortedResult();
+    }
+    if (input == ReadInput::Timeout) {
+      return shouldStop() ? abortedResult() : completed();
+    }
+    if (shouldStop()) {
+      return abortedResult();
+    }
+
+    const size_t max_scroll_top = ops_->maxScrollTopForMessage(message);
+    if (progress.scrollTop < max_scroll_top) {
+      const size_t configured_step = ops_->scrollStep();
+      const size_t step = configured_step == 0 ? max_scroll_top : configured_step;
+      progress.scrollTop =
+          std::min(max_scroll_top, progress.scrollTop + step);
+    } else if (progress.messageIndex + 1 < count) {
+      ++progress.messageIndex;
+      progress.scrollTop = 0;
+    } else {
+      if (!ops_->clearAssistantMessages()) {
+        return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantClearFailed);
+      }
+      return renderEmptyUntilIdle();
+    }
+
+    if (!persistProgress(count, progress)) {
+      return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantStorageFailed);
+    }
+  }
+
+  return abortedResult();
+}
+
+void ReadMode::abort(const char* reason) {
+  abort_requested_ = true;
+  abort_reason_ = reason;
+  if (abort_cleanup_done_ || ops_ == nullptr) {
+    return;
+  }
+  abort_cleanup_done_ = true;
+  ops_->cancelIdleTimer();
+  ops_->closeFiles();
+  state::abortRead(state_);
+}
+
+bool ReadMode::abortRequested() const {
+  return abort_requested_;
+}
+
+const char* ReadMode::abortReason() const {
+  return abort_reason_;
+}
+
+bool ReadMode::shouldStop() const {
+  return abort_requested_;
+}
+
+ModeRunResult ReadMode::abortedResult() const {
+  return aborted();
+}
+
+ModeRunResult ReadMode::renderEmptyUntilIdle() {
+  while (!shouldStop()) {
+    ops_->renderNoAssistantMessage();
+    if (shouldStop()) {
+      return abortedResult();
+    }
+    const ReadInput input = ops_->waitForInput(kReadIdleTimeoutMs);
+    if (input == ReadInput::LongPress) {
+      abort("btn_a_long_press");
+      return abortedResult();
+    }
+    if (input == ReadInput::Timeout) {
+      return shouldStop() ? abortedResult() : completed();
+    }
+  }
+  return abortedResult();
+}
+
+bool ReadMode::loadCurrentMessage(size_t index, std::string* message_out) const {
+  return ops_ != nullptr && ops_->loadAssistantMessage(index, message_out);
+}
+
+bool ReadMode::clampAndPersistProgress(size_t count,
+                                       const std::string& message,
+                                       ReadProgress* progress) {
+  if (progress == nullptr || ops_ == nullptr || count == 0) {
+    return false;
+  }
+  bool changed = false;
+  if (progress->messageIndex >= count) {
+    progress->messageIndex = count - 1;
+    progress->scrollTop = 0;
+    changed = true;
+  }
+  const size_t max_scroll_top = ops_->maxScrollTopForMessage(message);
+  if (progress->scrollTop > max_scroll_top) {
+    progress->scrollTop = max_scroll_top;
+    changed = true;
+  }
+  return !changed || persistProgress(count, *progress);
+}
+
+bool ReadMode::persistProgress(size_t count, const ReadProgress& progress) {
+  return ops_ != nullptr &&
+         ops_->saveReadProgress(count, progress.messageIndex, progress.scrollTop);
 }
 
 RecordingMode::RecordingMode(state::GlobalState* state, RecordingOps* ops)

@@ -85,6 +85,13 @@ The methods here are intentionally small and deterministic. They do not touch Wi
   - No-op for global state.
   - Check abort cleanup is mode-owned: cancel network work, close files, delete temp poll files, avoid committing metadata.
 
+## Read Abort
+
+- `abortRead(state)`
+  - No-op for global state.
+  - Read progress is persisted by the Read mode storage helper after each completed scroll or message advance.
+  - Read abort cleanup is mode-owned: close any message file handle and leave the last cleanly saved progress intact.
+
 ## DeepSleep Plan And Abort
 
 - `makeDeepSleepPlan(state)`
@@ -97,7 +104,7 @@ The methods here are intentionally small and deterministic. They do not touch Wi
 ## State Transitions
 
 - `transitionForEvent(mode, event)`
-  - Pure transition reducer for the three-mode state machine.
+  - Pure transition reducer for the four-mode state machine.
   - Indicates whether the current mode must be aborted before entering the next mode.
 
 - `applyTransition(state, transition)`

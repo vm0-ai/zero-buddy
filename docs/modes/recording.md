@@ -1,6 +1,6 @@
 # Recording Mode
 
-`Recording` is entered when the user long-presses BtnA. It records the user's voice, transcribes it, sends the recognized text as a user message, updates the global message cursor with the returned user `messageId`, resets assistant-check backoff, then returns control to the state machine.
+`Recording` is entered when the user long-presses BtnA from `DeepSleep`, `CheckAssistantMessage`, or `Read`. It records the user's voice, transcribes it, sends the recognized text as a user message, updates the global message cursor with the returned user `messageId`, resets assistant-check backoff, then returns control to the state machine.
 
 This mode may turn the screen on, but it does not own detailed rendering. It also does not decide the next mode directly. After `main` finishes or `abort` completes, the state machine performs the next transition.
 
@@ -9,6 +9,7 @@ This mode may turn the screen on, but it does not own detailed rendering. It als
 `Recording` owns:
 
 - Turning the screen on for the recording session.
+- Rendering the Zero dot-matrix avatar on recording status screens.
 - Selecting a CPU frequency that can reliably support audio capture.
 - Canceling pending RTC assistant-check wake state.
 - Clearing stored assistant messages through `clear_assistant_message` before starting a new user turn.

@@ -145,6 +145,8 @@ bool commitAssistantCheck(GlobalState* state, const AssistantCheckResult& result
 
 void abortAssistantCheck(GlobalState*) {}
 
+void abortRead(GlobalState*) {}
+
 DeepSleepPlan makeDeepSleepPlan(const GlobalState& state) {
   DeepSleepPlan plan;
   plan.rtcDelayMs = state.checkDelayMs == 0 ? kInitialCheckDelayMs : state.checkDelayMs;
@@ -162,6 +164,10 @@ Transition transitionForEvent(Mode mode, Event event) {
       if (event == Event::RtcWake) {
         transition.valid = true;
         transition.nextMode = Mode::CheckAssistantMessage;
+      } else if (event == Event::BtnAShortPress) {
+        transition.valid = true;
+        transition.requiresAbort = true;
+        transition.nextMode = Mode::Read;
       } else if (event == Event::BtnALongPress) {
         transition.valid = true;
         transition.requiresAbort = true;
@@ -171,6 +177,17 @@ Transition transitionForEvent(Mode mode, Event event) {
 
     case Mode::CheckAssistantMessage:
       if (event == Event::CheckComplete) {
+        transition.valid = true;
+        transition.nextMode = Mode::DeepSleep;
+      } else if (event == Event::BtnALongPress) {
+        transition.valid = true;
+        transition.requiresAbort = true;
+        transition.nextMode = Mode::Recording;
+      }
+      break;
+
+    case Mode::Read:
+      if (event == Event::ReadComplete) {
         transition.valid = true;
         transition.nextMode = Mode::DeepSleep;
       } else if (event == Event::BtnALongPress) {

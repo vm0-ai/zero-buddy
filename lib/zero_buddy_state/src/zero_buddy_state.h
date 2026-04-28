@@ -15,13 +15,16 @@ constexpr size_t kLastMessageIdBytes = 160;
 enum class Mode : uint8_t {
   DeepSleep,
   CheckAssistantMessage,
+  Read,
   Recording,
 };
 
 enum class Event : uint8_t {
   RtcWake,
+  BtnAShortPress,
   BtnALongPress,
   CheckComplete,
+  ReadComplete,
   RecordingComplete,
 };
 
@@ -74,6 +77,8 @@ void abortRecording(GlobalState* state);
 
 bool commitAssistantCheck(GlobalState* state, const AssistantCheckResult& result);
 void abortAssistantCheck(GlobalState* state);
+
+void abortRead(GlobalState* state);
 
 DeepSleepPlan makeDeepSleepPlan(const GlobalState& state);
 void abortDeepSleep(GlobalState* state);

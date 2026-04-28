@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include "zero_buddy_state.h"
@@ -96,6 +98,68 @@ class DeepSleepMode {
 
   state::GlobalState* state_;
   DeepSleepOps* ops_;
+  bool abort_requested_ = false;
+  bool abort_cleanup_done_ = false;
+  const char* abort_reason_ = nullptr;
+};
+
+enum class ReadInput {
+  Timeout,
+  ShortPress,
+  LongPress,
+};
+
+struct ReadProgress {
+  size_t messageIndex = 0;
+  size_t scrollTop = 0;
+};
+
+class ReadOps {
+ public:
+  virtual ~ReadOps() = default;
+
+  virtual void screenOn() = 0;
+  virtual void setCpuForReading() = 0;
+  virtual size_t storedAssistantMessageCount() = 0;
+  virtual bool loadReadProgress(ReadProgress* progress_out) = 0;
+  virtual bool loadAssistantMessage(size_t index, std::string* message_out) = 0;
+  virtual size_t maxScrollTopForMessage(const std::string& message) = 0;
+  virtual size_t scrollStep() = 0;
+  virtual bool saveReadProgress(size_t count, size_t index, size_t scroll_top) = 0;
+  virtual bool clearAssistantMessages() = 0;
+  virtual void renderNoAssistantMessage() = 0;
+  virtual void renderAssistantMessage(size_t index,
+                                      size_t count,
+                                      const std::string& message,
+                                      size_t scroll_top) = 0;
+  virtual ReadInput waitForInput(uint32_t timeout_ms) = 0;
+
+  virtual void cancelIdleTimer() = 0;
+  virtual void closeFiles() = 0;
+};
+
+class ReadMode {
+ public:
+  ReadMode(state::GlobalState* state, ReadOps* ops);
+
+  ModeRunResult main();
+  void abort(const char* reason);
+
+  bool abortRequested() const;
+  const char* abortReason() const;
+
+ private:
+  bool shouldStop() const;
+  ModeRunResult abortedResult() const;
+  ModeRunResult renderEmptyUntilIdle();
+  bool loadCurrentMessage(size_t index, std::string* message_out) const;
+  bool clampAndPersistProgress(size_t count,
+                               const std::string& message,
+                               ReadProgress* progress);
+  bool persistProgress(size_t count, const ReadProgress& progress);
+
+  state::GlobalState* state_;
+  ReadOps* ops_;
   bool abort_requested_ = false;
   bool abort_cleanup_done_ = false;
   const char* abort_reason_ = nullptr;

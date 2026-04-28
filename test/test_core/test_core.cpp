@@ -214,11 +214,12 @@ void test_power_window_state_machine() {
 
 void test_assistant_queue_manifest_round_trip() {
   const auto json =
-      zero_buddy::buildAssistantQueueManifest(3, 1, true, 2, "msg-1\\quoted");
+      zero_buddy::buildAssistantQueueManifest(3, 1, true, 2, "msg-1\\quoted", 120);
   const auto manifest = zero_buddy::parseAssistantQueueManifest(json, 5);
   TEST_ASSERT_TRUE(manifest.ok);
   TEST_ASSERT_EQUAL_UINT(3, manifest.count);
   TEST_ASSERT_EQUAL_UINT(1, manifest.index);
+  TEST_ASSERT_EQUAL_UINT(120, manifest.scroll_top);
   TEST_ASSERT_TRUE(manifest.waiting);
   TEST_ASSERT_EQUAL_UINT8(2, manifest.next_delay_index);
   TEST_ASSERT_EQUAL_STRING("msg-1\\quoted", manifest.last_seen_message_id.c_str());

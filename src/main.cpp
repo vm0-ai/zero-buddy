@@ -32,6 +32,10 @@ using zero_buddy::modes::DeepSleepOps;
 using zero_buddy::modes::ModeRunError;
 using zero_buddy::modes::ModeRunResult;
 using zero_buddy::modes::ModeRunStatus;
+using zero_buddy::modes::ReadInput;
+using zero_buddy::modes::ReadMode;
+using zero_buddy::modes::ReadOps;
+using zero_buddy::modes::ReadProgress;
 using zero_buddy::modes::RecordingMode;
 using zero_buddy::modes::RecordingOps;
 using zero_buddy::state::AssistantCheckResult;
@@ -51,8 +55,13 @@ constexpr uint32_t kMaxRecordingMs = 60000;
 constexpr uint32_t kWifiConnectAttemptMs = 12000;
 constexpr uint8_t kRecordingCpuMhz = 240;
 constexpr uint8_t kNetworkCpuMhz = 80;
-constexpr uint8_t kIdleCpuMhz = 40;
+constexpr uint8_t kReadCpuMhz = 80;
 constexpr uint8_t kScreenBrightness = 90;
+constexpr uint8_t kReadHeaderHeight = 16;
+constexpr uint8_t kReadLineHeight = 16;
+constexpr uint8_t kReadHorizontalPadding = 5;
+constexpr uint8_t kZeroAvatarWidth = 80;
+constexpr uint8_t kZeroAvatarHeight = 45;
 constexpr size_t kMaxAssistantMessages = 5;
 constexpr size_t kMaxAssistantMessageBytes = 4096;
 
@@ -70,9 +79,57 @@ RTC_DATA_ATTR GlobalState g_state;
 uint8_t g_pcm_buffer[kPcmBufferBytes] = {0};
 uint8_t g_asr_buffer[kAsrChunkBytes] = {0};
 
+constexpr char kZeroAvatar[kZeroAvatarHeight][kZeroAvatarWidth + 1] = {
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWBBBSSSSSBBBWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOOOOSSBWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBSSOOOOOOOOOOOOOOOOOSBWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOOOOOOOOOOOSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBSOOOOKKOOOOOOOOKOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBOOOKKOOOKKOOOOKKKOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBSOOOKOOOOKKOOOOKKOOOOOOOOOOOOOOSWBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBOOOKOOOOKKKOOOOKKOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBWSOOOKOOOOKKKOOOKKKKKOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBWSOOOKKKKKKKKKKKKOOOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBSOOOOOKKKOOOOOOOOOOOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOOOOOOSSSSSSOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBWSOOOOOOOOOOOOOOSSSSSSSSSOOOOOOOOSWBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBOOOOOKKKOOOOOOKKKKSSSSSSOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOKOOSSKSSSSSSSSSSOOOOOOSBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSSSSSSSSSSSSSSSSSSSSSSOOOOOSSSSBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSSSSSSSSSSSSSSSSSSSSSSSOOSSSSSSBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSSSOOSSOSSSSOOKKOSSSSSSSSSSKSSSSBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSSKKKKOKSSSOKKSBSOSSSSSSSSKSSSSSBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSSKKBWSKSSSSKKBWBSSSSSSSOKKKKSSBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSSKKBWSKKSSSKKBWSSSSSSSSSOOOSSSBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSSKKBBSKSSSSKKBWSSSSSSSSSSSSSSSBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSSOSBSOOSSSSOSWSSSSSSSSSSSSSSSBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSSSSSSKKOSSSSSSSSSSSSSSSSSSSOOSBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBOSSSSSSKKSSSSSSSSSSSSSSSSOOOOOSWBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBSOOSSSSSSSSSSSSSSSSSSSSSSOOOOOOSBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBSOOSSSSSSSSSSSSKSSSSSSSSOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBWSOOOSSSSSSOOSOKSSSSSSSSOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBSOOOOSSSSSOKKKSSSSSSSSOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBSOOOOOSSSSSSSSSSSSSSOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOSSSSSSSSSSSOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBOOOOOOOOOOOOSSSSSOOOOOOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOOOOOSSSSSOOOOOOOOOOOOOSWBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOOOOKKKKKKKKKOOOOOOOOOOSBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBSOOOOOOOKKKKKKKKKKKKOOOOOOOOOBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBSSOOOKKKKKKKKKKKKKKOSSOOOOBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBKKKKKKKKKKKKKKKBBBBSBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWSKKKKKKKKKKKKKKKWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWBKKKKKKKKKKKKKKBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBWWWWWWWWBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+};
+
 void beepAssistantLedOn();
 bool writeTextFile(const char* path, const std::string& value);
-bool writeAssistantQueueManifest(size_t count, size_t index);
+bool writeAssistantQueueManifest(size_t count, size_t index, size_t scroll_top);
 
 bool stateLooksValid(const GlobalState& state) {
   if (state.checkDelayMs == 0 ||
@@ -163,12 +220,137 @@ void drawStatus(const char* line1, const char* line2 = "") {
   M5.Display.setBrightness(kScreenBrightness);
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextWrap(false);
   M5.Display.setFont(&fonts::Font2);
   M5.Display.setCursor(8, 28);
   M5.Display.print(line1 != nullptr ? line1 : "");
   M5.Display.setFont(&fonts::Font0);
   M5.Display.setCursor(8, 58);
   M5.Display.print(line2 != nullptr ? line2 : "");
+}
+
+bool isAvatarEyeWhite(uint8_t row, uint8_t col) {
+  return row >= 23 && row <= 26 && col >= 29 && col <= 41;
+}
+
+uint16_t avatarColor(uint8_t row, uint8_t col, char cell) {
+  switch (cell) {
+    case 'O':
+      return M5.Display.color565(235, 122, 35);
+    case 'S':
+      return M5.Display.color565(244, 206, 154);
+    case 'K':
+      return M5.Display.color565(60, 55, 50);
+    case 'W':
+      return isAvatarEyeWhite(row, col) ? TFT_WHITE : TFT_BLACK;
+    case 'B':
+    default:
+      return TFT_BLACK;
+  }
+}
+
+void drawZeroAvatar(int x, int y, uint8_t scale = 1) {
+  scale = std::max<uint8_t>(1, scale);
+  for (uint8_t row = 0; row < kZeroAvatarHeight; ++row) {
+    for (uint8_t col = 0; col < kZeroAvatarWidth; ++col) {
+      const uint16_t color = avatarColor(row, col, kZeroAvatar[row][col]);
+      if (scale == 1) {
+        M5.Display.drawPixel(x + col, y + row, color);
+      } else {
+        M5.Display.fillRect(x + col * scale, y + row * scale, scale, scale, color);
+      }
+    }
+  }
+}
+
+void drawAvatarStatus(const char* line1, const char* line2 = "") {
+  M5.Display.setRotation(3);
+  M5.Display.setBrightness(kScreenBrightness);
+  M5.Display.fillScreen(TFT_BLACK);
+  constexpr uint8_t kAvatarScale = 2;
+  constexpr int kRightPadding = 8;
+  const int avatar_w = static_cast<int>(kZeroAvatarWidth) * kAvatarScale;
+  const int avatar_h = static_cast<int>(kZeroAvatarHeight) * kAvatarScale;
+  const int avatar_x = M5.Display.width() - avatar_w - kRightPadding;
+  const int avatar_y = (M5.Display.height() - avatar_h) / 2;
+  drawZeroAvatar(avatar_x, avatar_y, kAvatarScale);
+
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextWrap(false);
+  M5.Display.setFont(&fonts::Font2);
+  M5.Display.setCursor(8, 24);
+  M5.Display.print(line1 != nullptr ? line1 : "");
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setCursor(8, 52);
+  M5.Display.print(line2 != nullptr ? line2 : "");
+}
+
+void drawEmptyReadScreen() {
+  M5.Display.setRotation(3);
+  M5.Display.setBrightness(kScreenBrightness);
+  M5.Display.fillScreen(TFT_BLACK);
+  constexpr uint8_t kAvatarScale = 2;
+  constexpr int kRightPadding = 8;
+  const int avatar_w = static_cast<int>(kZeroAvatarWidth) * kAvatarScale;
+  const int avatar_h = static_cast<int>(kZeroAvatarHeight) * kAvatarScale;
+  const int avatar_x = M5.Display.width() - avatar_w - kRightPadding;
+  const int avatar_y = (M5.Display.height() - avatar_h) / 2;
+  drawZeroAvatar(avatar_x, avatar_y, kAvatarScale);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.setTextWrap(false);
+  M5.Display.setFont(&fonts::Font0);
+  const int text_x = std::max(0, (M5.Display.width() - M5.Display.textWidth("no message")) / 2);
+  M5.Display.setCursor(text_x, M5.Display.height() - 18);
+  M5.Display.print("no message");
+}
+
+size_t utf8DisplayWidthPx(const std::string& text, size_t* offset) {
+  if (offset == nullptr || *offset >= text.size()) {
+    return 0;
+  }
+  const uint8_t first = static_cast<uint8_t>(text[*offset]);
+  if (text[*offset] == '\n') {
+    ++(*offset);
+    return 0;
+  }
+  if (first < 0x80) {
+    ++(*offset);
+    return first == ' ' ? 4 : 6;
+  }
+  size_t len = 1;
+  if ((first & 0xE0) == 0xC0) {
+    len = 2;
+  } else if ((first & 0xF0) == 0xE0) {
+    len = 3;
+  } else if ((first & 0xF8) == 0xF0) {
+    len = 4;
+  }
+  *offset = std::min(text.size(), *offset + len);
+  return 12;
+}
+
+size_t estimateWrappedTextHeight(const std::string& text, size_t width_px) {
+  if (width_px == 0 || text.empty()) {
+    return kReadLineHeight;
+  }
+  size_t lines = 1;
+  size_t line_width = 0;
+  for (size_t i = 0; i < text.size();) {
+    if (text[i] == '\n') {
+      ++lines;
+      line_width = 0;
+      ++i;
+      continue;
+    }
+    const size_t glyph_width = utf8DisplayWidthPx(text, &i);
+    if (line_width > 0 && line_width + glyph_width > width_px) {
+      ++lines;
+      line_width = glyph_width;
+    } else {
+      line_width += glyph_width;
+    }
+  }
+  return lines * kReadLineHeight;
 }
 
 const char* modeRunErrorName(ModeRunError error) {
@@ -235,15 +417,15 @@ bool readTextFile(const char* path, std::string* value_out) {
   return true;
 }
 
-size_t assistant_message_count() {
+zero_buddy::AssistantQueueManifest readAssistantQueueManifest() {
   std::string manifest_body;
-  if (readTextFile(kAssistantQueueManifestPath, &manifest_body)) {
-    const auto manifest =
-        zero_buddy::parseAssistantQueueManifest(manifest_body, kMaxAssistantMessages);
-    if (manifest.ok) {
-      return std::min(manifest.count, kMaxAssistantMessages);
-    }
+  if (!readTextFile(kAssistantQueueManifestPath, &manifest_body)) {
+    return zero_buddy::AssistantQueueManifest();
   }
+  return zero_buddy::parseAssistantQueueManifest(manifest_body, kMaxAssistantMessages);
+}
+
+size_t assistant_message_file_count() {
   size_t count = 0;
   for (size_t i = 0; i < kMaxAssistantMessages; ++i) {
     const String final_path = assistantMessagePath(i);
@@ -254,8 +436,40 @@ size_t assistant_message_count() {
   return count;
 }
 
+size_t assistant_message_count() {
+  const auto manifest = readAssistantQueueManifest();
+  if (manifest.ok) {
+    return std::min(manifest.count, kMaxAssistantMessages);
+  }
+  return assistant_message_file_count();
+}
+
 bool assistant_message_exists() {
   return assistant_message_count() > 0;
+}
+
+bool read_assistant_message(size_t index, std::string* value_out) {
+  if (index >= kMaxAssistantMessages || value_out == nullptr) {
+    return false;
+  }
+  const String final_path = assistantMessagePath(index);
+  return readTextFile(final_path.c_str(), value_out);
+}
+
+bool load_read_progress(ReadProgress* progress_out) {
+  if (progress_out == nullptr) {
+    return false;
+  }
+  progress_out->messageIndex = 0;
+  progress_out->scrollTop = 0;
+
+  const auto manifest = readAssistantQueueManifest();
+  if (!manifest.ok) {
+    return true;
+  }
+  progress_out->messageIndex = manifest.index;
+  progress_out->scrollTop = manifest.scroll_top;
+  return true;
 }
 
 bool append_assistant_message(const std::string& value) {
@@ -264,6 +478,7 @@ bool append_assistant_message(const std::string& value) {
     return false;
   }
   const bool should_turn_led_on = !assistant_message_exists();
+  const auto previous_manifest = readAssistantQueueManifest();
   const String tmp_path = assistantMessageTmpPath(index);
   const String final_path = assistantMessagePath(index);
   const size_t next_count = index + 1;
@@ -278,7 +493,17 @@ bool append_assistant_message(const std::string& value) {
     removeIfExists(tmp_path.c_str());
     return false;
   }
-  if (!writeAssistantQueueManifest(next_count, 0)) {
+  size_t next_read_index = 0;
+  size_t next_scroll_top = 0;
+  if (previous_manifest.ok && index > 0) {
+    next_read_index = previous_manifest.index;
+    next_scroll_top = previous_manifest.scroll_top;
+    if (next_read_index > next_count) {
+      next_read_index = next_count - 1;
+      next_scroll_top = 0;
+    }
+  }
+  if (!writeAssistantQueueManifest(next_count, next_read_index, next_scroll_top)) {
     removeIfExists(final_path.c_str());
     return false;
   }
@@ -307,10 +532,11 @@ bool writeTextFile(const char* path, const std::string& value) {
   return written == value.size();
 }
 
-bool writeAssistantQueueManifest(size_t count, size_t index) {
+bool writeAssistantQueueManifest(size_t count, size_t index, size_t scroll_top) {
   const std::string body =
       std::string("{\"count\":") + std::to_string(count) +
-      ",\"index\":" + std::to_string(index) + "}";
+      ",\"index\":" + std::to_string(index) +
+      ",\"scrollTop\":" + std::to_string(scroll_top) + "}";
   return writeTextFile(kAssistantQueueManifestPath, body);
 }
 
@@ -805,21 +1031,146 @@ class HardwareDeepSleepOps : public DeepSleepOps {
 
 };
 
+class HardwareReadOps : public ReadOps {
+ public:
+  void screenOn() override {
+    M5.Display.setRotation(3);
+    M5.Display.setBrightness(kScreenBrightness);
+  }
+
+  void setCpuForReading() override {
+    setCpu(kReadCpuMhz);
+  }
+
+  size_t storedAssistantMessageCount() override {
+    return assistant_message_count();
+  }
+
+  bool loadReadProgress(ReadProgress* progress_out) override {
+    return load_read_progress(progress_out);
+  }
+
+  bool loadAssistantMessage(size_t index, std::string* message_out) override {
+    return read_assistant_message(index, message_out);
+  }
+
+  size_t maxScrollTopForMessage(const std::string& message) override {
+    const size_t width = static_cast<size_t>(
+        std::max(1, M5.Display.width() - static_cast<int>(kReadHorizontalPadding * 2)));
+    const size_t viewport = readViewportHeight();
+    const size_t text_height = estimateWrappedTextHeight(message, width);
+    if (text_height <= viewport) {
+      return 0;
+    }
+    return text_height - viewport;
+  }
+
+  size_t scrollStep() override {
+    return readViewportHeight();
+  }
+
+  bool saveReadProgress(size_t count, size_t index, size_t scroll_top) override {
+    if (count == 0) {
+      return writeAssistantQueueManifest(0, 0, 0);
+    }
+    if (index > count) {
+      index = count - 1;
+      scroll_top = 0;
+    }
+    return writeAssistantQueueManifest(count, index, scroll_top);
+  }
+
+  bool clearAssistantMessages() override {
+    return clear_assistant_message();
+  }
+
+  void renderNoAssistantMessage() override {
+    drawEmptyReadScreen();
+  }
+
+  void renderAssistantMessage(size_t index,
+                              size_t count,
+                              const std::string& message,
+                              size_t scroll_top) override {
+    M5.Display.setRotation(3);
+    M5.Display.setBrightness(kScreenBrightness);
+    M5.Display.fillScreen(TFT_BLACK);
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.setTextWrap(false);
+    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setCursor(4, 4);
+    M5.Display.print(String(static_cast<unsigned>(index + 1)) + "/" +
+                     String(static_cast<unsigned>(count)));
+    M5.Display.drawFastHLine(0, kReadHeaderHeight, M5.Display.width(), TFT_DARKGREY);
+
+    const int body_y = static_cast<int>(kReadHeaderHeight + 3);
+    const int body_h = std::max(1, M5.Display.height() - body_y);
+    M5.Display.setClipRect(0, body_y, M5.Display.width(), body_h);
+    M5.Display.setTextWrap(true);
+    M5.Display.setFont(&fonts::efontCN_12);
+    M5.Display.setCursor(kReadHorizontalPadding,
+                         body_y - static_cast<int>(scroll_top));
+    M5.Display.print(message.c_str());
+    M5.Display.clearClipRect();
+    M5.Display.setTextWrap(false);
+  }
+
+  ReadInput waitForInput(uint32_t timeout_ms) override {
+    const uint32_t start = millis();
+    uint32_t down_since_ms = 0;
+    while (millis() - start < timeout_ms) {
+      M5.update();
+      if (buttonADown()) {
+        const uint32_t now = millis();
+        if (down_since_ms == 0) {
+          down_since_ms = now == 0 ? 1 : now;
+        }
+        if (now - down_since_ms >= kLongPressMs) {
+          return ReadInput::LongPress;
+        }
+      } else if (down_since_ms != 0) {
+        return ReadInput::ShortPress;
+      }
+      delay(10);
+    }
+    return ReadInput::Timeout;
+  }
+
+  void cancelIdleTimer() override {}
+
+  void closeFiles() override {}
+
+ private:
+  size_t readViewportHeight() const {
+    const int body_y = static_cast<int>(kReadHeaderHeight + 3);
+    return static_cast<size_t>(std::max(1, M5.Display.height() - body_y));
+  }
+};
+
 class HardwareRecordingOps : public RecordingOps {
  public:
   void screenOn() override {
     M5.Display.setRotation(3);
     M5.Display.setBrightness(kScreenBrightness);
-    drawStatus("recording", "hold BtnA");
+    drawAvatarStatus("recording", "hold BtnA");
   }
 
   void showFailure(const ModeRunResult& result) {
     const char* error = modeRunErrorName(result.error);
-    drawStatus("recording failed", error);
+    String detail(error);
+    if (recording_failure_detail_ != nullptr && recording_failure_detail_[0] != '\0') {
+      detail += ":";
+      detail += recording_failure_detail_;
+    }
+    drawStatus("recording failed", detail.c_str());
     Serial.print("recording failed: ");
     Serial.println(error);
+    if (recording_failure_detail_ != nullptr && recording_failure_detail_[0] != '\0') {
+      Serial.print("recording detail: ");
+      Serial.println(recording_failure_detail_);
+    }
     Serial.flush();
-    delay(3500);
+    delay(8000);
   }
 
   void setCpuForRecording() override {
@@ -835,7 +1186,8 @@ class HardwareRecordingOps : public RecordingOps {
   }
 
   bool recordVoiceToFile() override {
-    drawStatus("recording", "speak now");
+    recording_failure_detail_ = "";
+    drawAvatarStatus("recording", "speak now");
     auto mic_cfg = M5.Mic.config();
     mic_cfg.pin_data_in = GPIO_NUM_34;
     mic_cfg.pin_ws = GPIO_NUM_0;
@@ -851,12 +1203,14 @@ class HardwareRecordingOps : public RecordingOps {
     mic_cfg.use_adc = false;
     M5.Mic.config(mic_cfg);
     if (!M5.Mic.begin()) {
+      recording_failure_detail_ = "mic-begin";
       return false;
     }
 
     File file = LittleFS.open(kVoicePcmPath, "w");
     if (!file) {
       M5.Mic.end();
+      recording_failure_detail_ = "file-open";
       return false;
     }
 
@@ -878,6 +1232,7 @@ class HardwareRecordingOps : public RecordingOps {
         file.close();
         M5.Mic.end();
         beepMicOff();
+        recording_failure_detail_ = "file-write";
         return false;
       }
       bytes_written += written;
@@ -886,17 +1241,30 @@ class HardwareRecordingOps : public RecordingOps {
     file.close();
     M5.Mic.end();
     beepMicOff();
+    if (bytes_written == 0) {
+      recording_failure_detail_ = "too-short";
+    }
     return bytes_written > 0;
   }
 
   bool ensureWifiConnected() override {
-    drawStatus("recording", "wifi");
-    return connectWifi(nullptr);
+    recording_failure_detail_ = "";
+    drawAvatarStatus("recording", "wifi");
+    const bool ok = connectWifi(nullptr);
+    if (!ok) {
+      recording_failure_detail_ = "connect";
+    }
+    return ok;
   }
 
   bool voiceToText(std::string* text_out) override {
-    drawStatus("recording", "speech to text");
-    return transcribePcmFile(kVoicePcmPath, text_out);
+    recording_failure_detail_ = "";
+    drawAvatarStatus("recording", "speech to text");
+    const bool ok = transcribePcmFile(kVoicePcmPath, text_out);
+    if (!ok) {
+      recording_failure_detail_ = "asr";
+    }
+    return ok;
   }
 
   void deleteVoiceFile() override {
@@ -905,18 +1273,22 @@ class HardwareRecordingOps : public RecordingOps {
 
   bool sendTextMessage(const std::string& text, std::string* user_message_id_out) override {
     if (user_message_id_out == nullptr || text.empty() || configLooksPlaceholder(kZeroThreadId)) {
+      recording_failure_detail_ = "bad-message";
       return false;
     }
-    drawStatus("recording", "send message");
+    recording_failure_detail_ = "";
+    drawAvatarStatus("recording", "send message");
     const String body =
         String("{\"prompt\":\"") + jsonEscape(String(text.c_str())) +
         "\",\"threadId\":\"" + kZeroThreadId + "\"}";
     String response;
     if (!httpPostJson(kZeroPostUrl, body, &response, nullptr)) {
+      recording_failure_detail_ = "http";
       return false;
     }
     const std::string id = zero_buddy::extractJsonString(response.c_str(), "messageId");
     if (id.empty()) {
+      recording_failure_detail_ = "message-id";
       return false;
     }
     *user_message_id_out = id;
@@ -938,7 +1310,20 @@ class HardwareRecordingOps : public RecordingOps {
   }
 
   void closeFiles() override {}
+
+ private:
+  const char* recording_failure_detail_ = "";
 };
+
+void runRecordingOnce() {
+  zero_buddy::state::setMode(&g_state, zero_buddy::state::Mode::Recording);
+  HardwareRecordingOps ops;
+  RecordingMode mode(&g_state, &ops);
+  const auto result = mode.main();
+  if (result.status == ModeRunStatus::Failed) {
+    ops.showFailure(result);
+  }
+}
 
 void enterDeepSleep() {
   zero_buddy::state::setMode(&g_state, zero_buddy::state::Mode::DeepSleep);
@@ -954,25 +1339,26 @@ void runCheckAssistantThenSleep() {
   ops.setMode(&mode);
   const auto result = mode.main();
   if (result.status == ModeRunStatus::Aborted && mode.abortRequested()) {
-    zero_buddy::state::setMode(&g_state, zero_buddy::state::Mode::Recording);
-    HardwareRecordingOps recording_ops;
-    RecordingMode recording(&g_state, &recording_ops);
-    const auto recording_result = recording.main();
-    if (recording_result.status == ModeRunStatus::Failed) {
-      recording_ops.showFailure(recording_result);
-    }
+    runRecordingOnce();
+  }
+  enterDeepSleep();
+}
+
+void runReadThenSleep() {
+  zero_buddy::state::setMode(&g_state, zero_buddy::state::Mode::Read);
+  HardwareReadOps ops;
+  ReadMode mode(&g_state, &ops);
+  const auto result = mode.main();
+  if (result.status == ModeRunStatus::Aborted && mode.abortRequested()) {
+    runRecordingOnce();
+  } else {
+    mode.abort("read_exit");
   }
   enterDeepSleep();
 }
 
 void runRecordingThenSleep() {
-  zero_buddy::state::setMode(&g_state, zero_buddy::state::Mode::Recording);
-  HardwareRecordingOps ops;
-  RecordingMode mode(&g_state, &ops);
-  const auto result = mode.main();
-  if (result.status == ModeRunStatus::Failed) {
-    ops.showFailure(result);
-  }
+  runRecordingOnce();
   enterDeepSleep();
 }
 
@@ -1005,6 +1391,8 @@ void setup() {
       runRecordingThenSleep();
       return;
     }
+    runReadThenSleep();
+    return;
   }
 
   enterDeepSleep();

@@ -10,8 +10,8 @@ messages to show on the device screen.
 
 1. Install PlatformIO.
 2. Copy `src/secrets.example.h` to `src/secrets.h`.
-3. Fill in Wi-Fi credentials, Doubao ASR credentials, Zero API settings, and
-   proxy settings in `src/secrets.h`.
+3. Fill in Wi-Fi credentials, Doubao ASR credentials, and Zero API settings in
+   `src/secrets.h`.
 4. Build and upload:
 
 ```sh

@@ -17,7 +17,3 @@ constexpr char kAsrWsResourceId[] = "volc.bigasr.sauc.duration";
 
 constexpr char kZeroApiKey[] = "your-zero-api-key";
 constexpr char kZeroThreadId[] = "your-zero-thread-id";
-
-constexpr char kProxyHost[] = "your-proxy-host";
-constexpr uint16_t kProxyPort = 8443;
-constexpr char kProxyBasicAuth[] = "Basic your-proxy-basic-auth";

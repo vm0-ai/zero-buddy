@@ -391,32 +391,48 @@ void drawEmptyReadScreen() {
   drawAvatarDialogue("no message");
 }
 
-String batteryLevelLabel() {
+uint8_t batteryLevelBars() {
   const int32_t level = M5.Power.getBatteryLevel();
   if (level < 0) {
-    return "--%";
+    return 0;
   }
-  return String(std::min<int32_t>(100, level)) + "%";
+  const int32_t clamped = std::max<int32_t>(0, std::min<int32_t>(100, level));
+  if (clamped == 0) {
+    return 0;
+  }
+  return static_cast<uint8_t>(std::min<int32_t>(4, (clamped + 24) / 25));
 }
 
 void drawReadBatteryLevel() {
   const uint16_t bg = avatarBackgroundColor();
   const uint16_t fg = dialogueBorderColor();
-  const String label = batteryLevelLabel();
-  M5.Display.setTextWrap(false);
-  M5.Display.setFont(&fonts::Font0);
-  const int text_w = M5.Display.textWidth(label.c_str());
-  const int x = std::max(0, M5.Display.width() - kReadPaddingRight - text_w);
-  const int y = kReadPaddingTop;
+  constexpr int kBodyWidth = 22;
+  constexpr int kBodyHeight = 10;
+  constexpr int kCapWidth = 2;
+  constexpr int kBarWidth = 3;
+  constexpr int kBarGap = 2;
+  const int x = std::max(0, M5.Display.width() - kReadPaddingRight -
+                                kBodyWidth - kCapWidth);
+  const int y = kReadPaddingTop + 1;
   const int clear_x = std::max(0, x - 1);
   M5.Display.fillRect(clear_x,
                       0,
                       M5.Display.width() - clear_x,
                       kReadPaddingTop + kReadHeaderHeight,
                       bg);
-  M5.Display.setTextColor(fg, bg);
-  M5.Display.setCursor(x, y);
-  M5.Display.print(label);
+  M5.Display.drawRect(x, y, kBodyWidth, kBodyHeight, fg);
+  M5.Display.fillRect(x + kBodyWidth, y + 3, kCapWidth, 4, fg);
+
+  const uint8_t bars = batteryLevelBars();
+  const int bar_y = y + 2;
+  for (uint8_t i = 0; i < 4; ++i) {
+    const int bar_x = x + 2 + i * (kBarWidth + kBarGap);
+    if (i < bars) {
+      M5.Display.fillRect(bar_x, bar_y, kBarWidth, kBodyHeight - 4, fg);
+    } else {
+      M5.Display.drawRect(bar_x, bar_y, kBarWidth, kBodyHeight - 4, fg);
+    }
+  }
 }
 
 void drawBootScreen() {

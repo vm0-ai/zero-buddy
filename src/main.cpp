@@ -24,6 +24,22 @@
 #include "secrets.example.h"
 #endif
 
+#ifndef ZERO_BUDDY_WIFI_SSID
+#define ZERO_BUDDY_WIFI_SSID ""
+#endif
+
+#ifndef ZERO_BUDDY_WIFI_PASSWORD
+#define ZERO_BUDDY_WIFI_PASSWORD ""
+#endif
+
+#ifndef ZERO_BUDDY_PAT
+#define ZERO_BUDDY_PAT ""
+#endif
+
+#ifndef ZERO_BUDDY_THREAD_ID
+#define ZERO_BUDDY_THREAD_ID ""
+#endif
+
 #include "screen_renderer.h"
 #include "zero_buddy_core.h"
 #include "zero_buddy_modes.h"
@@ -58,7 +74,6 @@ constexpr int kBuzzerPin = 2;
 constexpr int kSampleRate = 16000;
 constexpr size_t kMicSamplesPerRead = 256;
 constexpr size_t kPcmBufferBytes = kMicSamplesPerRead * sizeof(int16_t);
-constexpr size_t kAsrChunkBytes = kSampleRate * 2 / 5;
 constexpr uint32_t kLongPressMs = 550;
 constexpr uint32_t kMaxRecordingMs = 60000;
 constexpr uint32_t kBootSplashMs = 3000;
@@ -71,13 +86,13 @@ constexpr size_t kMaxAssistantMessageBytes = 4096;
 
 constexpr char kVoicePcmPath[] = "/voice.pcm";
 constexpr char kAssistantQueueManifestPath[] = "/assistant_queue.txt";
-constexpr char kAsrWsHost[] = "openspeech.bytedance.com";
-constexpr uint16_t kAsrWsPort = 443;
-constexpr char kAsrWsPath[] = "/api/v3/sauc/bigmodel_nostream";
-constexpr char kZeroHost[] = "vm0-api.vm6.ai";
-constexpr char kZeroPostUrl[] = "https://vm0-api.vm6.ai/api/v1/chat-threads/messages";
-constexpr char kZeroDeviceTokenUrl[] = "https://vm0-api.vm6.ai/api/device-token";
-constexpr char kZeroDeviceTokenPollUrl[] = "https://vm0-api.vm6.ai/api/device-token/poll";
+constexpr char kZeroHost[] = "api.vm0.ai";
+constexpr char kZeroPostUrl[] = "https://api.vm0.ai/api/v1/chat-threads/messages";
+constexpr char kZeroTranscriptionUrl[] =
+    "https://api.vm0.ai/api/v1/audio/transcriptions";
+constexpr char kZeroDeviceTokenUrl[] = "https://api.vm0.ai/api/device-token";
+constexpr char kZeroDeviceTokenPollUrl[] = "https://api.vm0.ai/api/device-token/poll";
+constexpr char kZeroUserAgent[] = "zero-buddy/0.1.0";
 constexpr char kBb0VerificationUrl[] = "https://bb0.ai";
 constexpr char kFirmwareVersion[] = "0.1.0";
 constexpr char kRuntimeConfigNamespace[] = "zero_runtime";
@@ -105,7 +120,6 @@ RTC_DATA_ATTR GlobalState g_state;
 
 ScreenRenderer g_screen(&g_state);
 uint8_t g_pcm_buffer[kPcmBufferBytes] = {0};
-uint8_t g_asr_buffer[kAsrChunkBytes] = {0};
 bool g_btn_b_was_down = false;
 esp_timer_handle_t g_runtime_check_timer = nullptr;
 volatile bool g_runtime_check_due = false;
@@ -508,6 +522,7 @@ String jsonEscape(const String& text) {
   out.reserve(text.length() + 16);
   for (size_t i = 0; i < text.length(); ++i) {
     const char ch = text[i];
+    const uint8_t byte = static_cast<uint8_t>(ch);
     if (ch == '"' || ch == '\\') {
       out += '\\';
       out += ch;
@@ -517,6 +532,10 @@ String jsonEscape(const String& text) {
       out += "\\r";
     } else if (ch == '\t') {
       out += "\\t";
+    } else if (byte < 0x20) {
+      char escaped[7] = {0};
+      snprintf(escaped, sizeof(escaped), "\\u%04x", byte);
+      out += escaped;
     } else {
       out += ch;
     }
@@ -524,15 +543,16 @@ String jsonEscape(const String& text) {
   return out;
 }
 
-bool configLooksPlaceholder(const char* value) {
-  return value == nullptr || value[0] == '\0' || strstr(value, "your-") == value;
-}
-
 struct RuntimeConfig {
   String wifi_ssid;
   String wifi_password;
   String auth_token;
   String thread_id;
+  bool wifi_from_nvs = false;
+  bool auth_token_from_nvs = false;
+  bool thread_id_from_nvs = false;
+  bool auth_token_from_compile = false;
+  bool thread_id_from_compile = false;
 
   bool hasWifi() const {
     return wifi_ssid.length() > 0;
@@ -560,6 +580,17 @@ String readRuntimeConfigString(const char* key, size_t max_chars) {
   return value;
 }
 
+String compileTimeConfigString(const char* value, size_t max_chars) {
+  if (value == nullptr || value[0] == '\0') {
+    return "";
+  }
+  String compiled(value);
+  if (compiled.length() > max_chars) {
+    return "";
+  }
+  return compiled;
+}
+
 bool writeRuntimeConfigString(const char* key, const String& value, size_t max_chars) {
   if (value.length() == 0 || value.length() > max_chars) {
     return false;
@@ -584,11 +615,35 @@ void removeRuntimeConfigKey(const char* key) {
 
 RuntimeConfig loadRuntimeConfig() {
   RuntimeConfig config;
-  config.wifi_ssid = readRuntimeConfigString(kRuntimeWifiSsidKey, kMaxWifiSsidChars);
-  config.wifi_password =
-      readRuntimeConfigString(kRuntimeWifiPasswordKey, kMaxWifiPasswordChars);
-  config.auth_token = readRuntimeConfigString(kRuntimeAuthTokenKey, kMaxAuthTokenChars);
-  config.thread_id = readRuntimeConfigString(kRuntimeThreadIdKey, kMaxThreadIdChars);
+  const String nvs_wifi_ssid =
+      readRuntimeConfigString(kRuntimeWifiSsidKey, kMaxWifiSsidChars);
+  if (nvs_wifi_ssid.length() > 0) {
+    config.wifi_ssid = nvs_wifi_ssid;
+    config.wifi_from_nvs = true;
+    config.wifi_password =
+        readRuntimeConfigString(kRuntimeWifiPasswordKey, kMaxWifiPasswordChars);
+  } else {
+    config.wifi_ssid =
+        compileTimeConfigString(ZERO_BUDDY_WIFI_SSID, kMaxWifiSsidChars);
+    if (config.wifi_ssid.length() > 0) {
+      config.wifi_password =
+          compileTimeConfigString(ZERO_BUDDY_WIFI_PASSWORD, kMaxWifiPasswordChars);
+    }
+  }
+
+  config.auth_token = compileTimeConfigString(ZERO_BUDDY_PAT, kMaxAuthTokenChars);
+  config.auth_token_from_compile = config.auth_token.length() > 0;
+  if (config.auth_token.length() == 0) {
+    config.auth_token = readRuntimeConfigString(kRuntimeAuthTokenKey, kMaxAuthTokenChars);
+    config.auth_token_from_nvs = config.auth_token.length() > 0;
+  }
+
+  config.thread_id = compileTimeConfigString(ZERO_BUDDY_THREAD_ID, kMaxThreadIdChars);
+  config.thread_id_from_compile = config.thread_id.length() > 0;
+  if (config.thread_id.length() == 0) {
+    config.thread_id = readRuntimeConfigString(kRuntimeThreadIdKey, kMaxThreadIdChars);
+    config.thread_id_from_nvs = config.thread_id.length() > 0;
+  }
   return config;
 }
 
@@ -731,6 +786,14 @@ struct HttpResponse {
   String body;
 };
 
+void configureZeroHttpClient(HTTPClient* http) {
+  if (http == nullptr) {
+    return;
+  }
+  http->setUserAgent(kZeroUserAgent);
+  http->setReuse(false);
+}
+
 bool httpGetWithToken(const String& url,
                       const String& auth_token,
                       HttpResponse* response_out,
@@ -747,11 +810,13 @@ bool httpGetWithToken(const String& url,
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
+  configureZeroHttpClient(&http);
   http.setTimeout(12000);
   if (!http.begin(client, url)) {
     return false;
   }
   http.addHeader("Authorization", String("Bearer ") + auth_token);
+  http.addHeader("Accept", "application/json");
   const int code = http.GET();
   response_out->status_code = code;
   restartIfBtnBPressed();
@@ -785,6 +850,7 @@ bool httpPostJsonRequest(const String& url,
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
+  configureZeroHttpClient(&http);
   http.setTimeout(20000);
   if (!http.begin(client, url)) {
     return false;
@@ -793,8 +859,12 @@ bool httpPostJsonRequest(const String& url,
     http.addHeader("Authorization", String("Bearer ") + auth_token);
   }
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("Accept", "application/json");
   const int code = http.POST(body);
   response_out->status_code = code;
+  if (code > 0) {
+    response_out->body = http.getString();
+  }
   restartIfBtnBPressed();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     http.end();
@@ -804,7 +874,6 @@ bool httpPostJsonRequest(const String& url,
     http.end();
     return false;
   }
-  response_out->body = http.getString();
   http.end();
   return true;
 }
@@ -826,6 +895,7 @@ bool httpPostJsonAnyStatus(const String& url,
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
+  configureZeroHttpClient(&http);
   http.setTimeout(20000);
   if (!http.begin(client, url)) {
     return false;
@@ -834,6 +904,7 @@ bool httpPostJsonAnyStatus(const String& url,
     http.addHeader("Authorization", String("Bearer ") + auth_token);
   }
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("Accept", "application/json");
   const int code = http.POST(body);
   response_out->status_code = code;
   restartIfBtnBPressed();
@@ -877,234 +948,65 @@ bool httpPostJson(const String& url,
   return true;
 }
 
-bool readExact(WiFiClientSecure* client, uint8_t* out, size_t len, uint32_t timeout_ms) {
-  if (client == nullptr || out == nullptr) {
-    return false;
-  }
-  size_t offset = 0;
-  const uint32_t deadline = millis() + timeout_ms;
-  while (offset < len && static_cast<int32_t>(millis() - deadline) < 0) {
-    const int available = client->available();
-    if (available <= 0) {
-      restartAwareDelay(2);
-      continue;
-    }
-    const size_t want = std::min(len - offset, static_cast<size_t>(available));
-    const int got = client->read(out + offset, want);
-    if (got > 0) {
-      offset += static_cast<size_t>(got);
-    }
-  }
-  return offset == len;
-}
-
-bool readHttpHeaders(WiFiClientSecure* client, String* headers_out, uint32_t timeout_ms) {
-  if (client == nullptr || headers_out == nullptr) {
-    return false;
-  }
-  headers_out->remove(0);
-  const uint32_t deadline = millis() + timeout_ms;
-  while (headers_out->indexOf("\r\n\r\n") < 0 &&
-         static_cast<int32_t>(millis() - deadline) < 0) {
-    while (client->available() > 0) {
-      *headers_out += static_cast<char>(client->read());
-      if (headers_out->indexOf("\r\n\r\n") >= 0) {
-        return true;
-      }
-      if (headers_out->length() > 4096) {
-        return false;
-      }
-    }
-    restartAwareDelay(2);
-  }
-  return headers_out->indexOf("\r\n\r\n") >= 0;
-}
-
-bool wsSendBinary(WiFiClientSecure* client, const uint8_t* payload, size_t payload_len) {
-  if (client == nullptr || payload == nullptr || payload_len > 65535) {
-    return false;
-  }
-  std::vector<uint8_t> frame;
-  frame.reserve(payload_len + 16);
-  frame.push_back(0x82);
-  if (payload_len < 126) {
-    frame.push_back(0x80 | static_cast<uint8_t>(payload_len));
-  } else {
-    frame.push_back(0x80 | 126);
-    frame.push_back((payload_len >> 8) & 0xff);
-    frame.push_back(payload_len & 0xff);
-  }
-  const uint8_t mask[4] = {
-      static_cast<uint8_t>(esp_random() & 0xff),
-      static_cast<uint8_t>(esp_random() & 0xff),
-      static_cast<uint8_t>(esp_random() & 0xff),
-      static_cast<uint8_t>(esp_random() & 0xff),
-  };
-  frame.insert(frame.end(), mask, mask + 4);
-  for (size_t i = 0; i < payload_len; ++i) {
-    frame.push_back(payload[i] ^ mask[i % 4]);
-  }
-  return client->write(frame.data(), frame.size()) == frame.size();
-}
-
-bool wsReadFrame(WiFiClientSecure* client,
-                 uint8_t* opcode_out,
-                 std::vector<uint8_t>* payload_out,
-                 uint32_t timeout_ms) {
-  uint8_t hdr[2] = {0};
-  if (!readExact(client, hdr, sizeof(hdr), timeout_ms)) {
-    return false;
-  }
-  *opcode_out = hdr[0] & 0x0f;
-  const bool masked = (hdr[1] & 0x80) != 0;
-  uint64_t payload_len = hdr[1] & 0x7f;
-  if (payload_len == 126) {
-    uint8_t ext[2] = {0};
-    if (!readExact(client, ext, sizeof(ext), timeout_ms)) {
-      return false;
-    }
-    payload_len = (static_cast<uint64_t>(ext[0]) << 8) | ext[1];
-  } else if (payload_len == 127) {
-    uint8_t ext[8] = {0};
-    if (!readExact(client, ext, sizeof(ext), timeout_ms)) {
-      return false;
-    }
-    payload_len = 0;
-    for (uint8_t b : ext) {
-      payload_len = (payload_len << 8) | b;
-    }
-  }
-  if (payload_len > 32 * 1024) {
-    return false;
-  }
-  uint8_t mask[4] = {0};
-  if (masked && !readExact(client, mask, sizeof(mask), timeout_ms)) {
-    return false;
-  }
-  payload_out->assign(static_cast<size_t>(payload_len), 0);
-  if (payload_len > 0 &&
-      !readExact(client, payload_out->data(), static_cast<size_t>(payload_len), timeout_ms)) {
-    return false;
-  }
-  if (masked) {
-    for (size_t i = 0; i < payload_out->size(); ++i) {
-      (*payload_out)[i] ^= mask[i % 4];
-    }
-  }
-  return true;
-}
-
-bool sendAsrClientRequest(WiFiClientSecure* client) {
-  const String json =
-      String("{\"user\":{\"uid\":\"m5stickcplus\",\"did\":\"M5StickCPlus\",") +
-      "\"platform\":\"arduino-esp32\",\"sdk_version\":\"zero-buddy\",\"app_version\":\"2\"},"
-      "\"audio\":{\"format\":\"pcm\",\"codec\":\"raw\",\"rate\":16000,\"bits\":16,"
-      "\"channel\":1,\"language\":\"zh-CN\"},"
-      "\"request\":{\"model_name\":\"bigmodel\",\"enable_itn\":true,"
-      "\"enable_punc\":true,\"enable_ddc\":false}}";
-  std::vector<uint8_t> packet;
-  packet.reserve(json.length() + 8);
-  packet.push_back(0x11);
-  packet.push_back(0x10);
-  packet.push_back(0x10);
-  packet.push_back(0x00);
-  zero_buddy::appendU32(packet, static_cast<uint32_t>(json.length()));
-  packet.insert(packet.end(), json.begin(), json.end());
-  return wsSendBinary(client, packet.data(), packet.size());
-}
-
 bool transcribePcmFile(const char* path, std::string* text_out) {
-  if (text_out == nullptr || configLooksPlaceholder(kAsrWsAppKey) ||
-      configLooksPlaceholder(kAsrWsAccessKey)) {
+  if (text_out == nullptr) {
     return false;
   }
+  text_out->clear();
+  const RuntimeConfig config = loadRuntimeConfig();
+  if (!config.hasAuthToken()) {
+    Serial.println("transcription failed: missing auth token");
+    return false;
+  }
+
   File file = LittleFS.open(path, FILE_READ);
   if (!file || file.size() == 0) {
+    Serial.println("transcription failed: missing or empty pcm file");
     if (file) {
       file.close();
     }
     return false;
   }
+  const size_t pcm_size = static_cast<size_t>(file.size());
+  Serial.printf("transcription pcm bytes=%u\n", static_cast<unsigned>(pcm_size));
 
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(12000);
-  if (!client.connect(kAsrWsHost, kAsrWsPort)) {
+  HTTPClient http;
+  configureZeroHttpClient(&http);
+  http.setTimeout(60000);
+  if (!http.begin(client, kZeroTranscriptionUrl)) {
     file.close();
+    Serial.println("transcription failed: http begin");
     return false;
   }
-
-  const String connect_id = String(static_cast<uint32_t>(esp_random()), HEX) +
-                            String(static_cast<uint32_t>(esp_random()), HEX);
-  const String request =
-      String("GET ") + kAsrWsPath + " HTTP/1.1\r\n" +
-      "Host: " + kAsrWsHost + "\r\n" +
-      "Upgrade: websocket\r\n"
-      "Connection: Upgrade\r\n"
-      "Sec-WebSocket-Version: 13\r\n"
-      "Sec-WebSocket-Key: M5StickCPlusWs==\r\n" +
-      "X-Api-App-Key: " + kAsrWsAppKey + "\r\n" +
-      "X-Api-Access-Key: " + kAsrWsAccessKey + "\r\n" +
-      "X-Api-Resource-Id: " + kAsrWsResourceId + "\r\n" +
-      "X-Api-Connect-Id: " + connect_id + "\r\n\r\n";
-  client.print(request);
-
-  String headers;
-  if (!readHttpHeaders(&client, &headers, 12000) || !headers.startsWith("HTTP/1.1 101")) {
-    file.close();
-    client.stop();
-    return false;
-  }
-  if (!sendAsrClientRequest(&client)) {
-    file.close();
-    client.stop();
-    return false;
-  }
-
-  const size_t total = static_cast<size_t>(file.size());
-  size_t sent = 0;
-  while (file.available()) {
-    const size_t read_len = file.read(g_asr_buffer, sizeof(g_asr_buffer));
-    if (read_len == 0) {
-      break;
-    }
-    sent += read_len;
-    const bool final = sent >= total;
-    const auto packet = zero_buddy::buildStreamAudioPacket(g_asr_buffer, read_len, final);
-    if (!wsSendBinary(&client, packet.data(), packet.size())) {
-      file.close();
-      client.stop();
-      return false;
-    }
-    restartAwareDelay(80);
-  }
+  http.addHeader("Authorization", String("Bearer ") + config.auth_token);
+  http.addHeader("Content-Type", "application/octet-stream");
+  http.addHeader("Accept", "application/json");
+  const int code = http.sendRequest("POST", &file, pcm_size);
   file.close();
-
-  const uint32_t deadline = millis() + 10000;
-  std::string best_text;
-  while (static_cast<int32_t>(millis() - deadline) < 0) {
-    restartIfBtnBPressed();
-    uint8_t opcode = 0;
-    std::vector<uint8_t> payload;
-    if (!wsReadFrame(&client, &opcode, &payload, 1000)) {
-      continue;
-    }
-    if (opcode != 0x1 && opcode != 0x2) {
-      continue;
-    }
-    const auto parsed = zero_buddy::parseAsrServerPayload(payload.data(), payload.size());
-    if (!parsed.ok) {
-      continue;
-    }
-    if (!parsed.text.empty()) {
-      best_text = parsed.text;
-    }
-    if (parsed.final) {
-      break;
-    }
+  restartIfBtnBPressed();
+  String response_body;
+  if (code > 0) {
+    response_body = http.getString();
   }
-  client.stop();
-  *text_out = best_text;
+  Serial.printf("transcription http code=%d\n", code);
+  if (code != 200) {
+    if (response_body.length() > 0) {
+      Serial.print("transcription response: ");
+      Serial.println(response_body.substring(0, 240));
+    }
+    http.end();
+    return false;
+  }
+  http.end();
+
+  *text_out =
+      zero_buddy::extractJsonString(std::string(response_body.c_str()), "text");
+  if (text_out->empty()) {
+    Serial.print("transcription empty text response: ");
+    Serial.println(response_body.substring(0, 240));
+  }
   return !text_out->empty();
 }
 
@@ -1606,6 +1508,14 @@ BootHttpOutcome createRuntimeThreadFromInitMessage(const RuntimeConfig& config) 
   return BootHttpOutcome::Ok;
 }
 
+void haltBootPreflight(const char* line1, const char* line2) {
+  g_screen.render_screen_setup_status(line1, line2);
+  while (true) {
+    pollControls();
+    delay(50);
+  }
+}
+
 bool ensureIdentityReady() {
   while (true) {
     RuntimeConfig config = loadRuntimeConfig();
@@ -1626,6 +1536,12 @@ bool ensureIdentityReady() {
           zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::ThreadCreateFailed);
       if (action.clear_auth_token) {
         clearRuntimeAuthAndThread();
+        if (config.auth_token_from_compile) {
+          haltBootPreflight("token rejected", "check firmware");
+        }
+        if (!config.auth_token_from_nvs) {
+          runDeviceCodeProvisioning();
+        }
       }
       continue;
     }
@@ -1641,6 +1557,9 @@ bool ensureIdentityReady() {
     const auto action =
         zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::MessageReadFailed);
     if (action.clear_thread_id) {
+      if (config.thread_id_from_compile) {
+        haltBootPreflight("thread rejected", "check firmware");
+      }
       clearRuntimeThreadId();
     }
   }
@@ -1957,7 +1876,7 @@ class HardwareRecordingOps : public RecordingOps {
   }
 
   bool recordVoiceToFile() override {
-    recording_failure_detail_ = "";
+    setRecordingFailureDetail("");
     g_screen.render_screen_recording_active();
     auto mic_cfg = M5.Mic.config();
     mic_cfg.pin_data_in = GPIO_NUM_34;
@@ -1974,14 +1893,14 @@ class HardwareRecordingOps : public RecordingOps {
     mic_cfg.use_adc = false;
     M5.Mic.config(mic_cfg);
     if (!M5.Mic.begin()) {
-      recording_failure_detail_ = "mic-begin";
+      setRecordingFailureDetail("mic-begin");
       return false;
     }
 
     File file = LittleFS.open(kVoicePcmPath, "w");
     if (!file) {
       M5.Mic.end();
-      recording_failure_detail_ = "file-open";
+      setRecordingFailureDetail("file-open");
       return false;
     }
 
@@ -2003,7 +1922,7 @@ class HardwareRecordingOps : public RecordingOps {
         file.close();
         M5.Mic.end();
         beepMicOff();
-        recording_failure_detail_ = "file-write";
+        setRecordingFailureDetail("file-write");
         return false;
       }
       bytes_written += written;
@@ -2013,27 +1932,27 @@ class HardwareRecordingOps : public RecordingOps {
     M5.Mic.end();
     beepMicOff();
     if (bytes_written == 0) {
-      recording_failure_detail_ = "too-short";
+      setRecordingFailureDetail("too-short");
     }
     return bytes_written > 0;
   }
 
   bool ensureWifiConnected() override {
-    recording_failure_detail_ = "";
+    setRecordingFailureDetail("");
     g_screen.render_screen_recording_wifi();
     const bool ok = connectWifi(nullptr);
     if (!ok) {
-      recording_failure_detail_ = "connect";
+      setRecordingFailureDetail("connect");
     }
     return ok;
   }
 
   bool voiceToText(std::string* text_out) override {
-    recording_failure_detail_ = "";
+    setRecordingFailureDetail("");
     g_screen.render_screen_recording_transcribing();
     const bool ok = transcribePcmFile(kVoicePcmPath, text_out);
     if (!ok) {
-      recording_failure_detail_ = "asr";
+      setRecordingFailureDetail("asr");
     }
     return ok;
   }
@@ -2045,22 +1964,85 @@ class HardwareRecordingOps : public RecordingOps {
   bool sendTextMessage(const std::string& text, std::string* user_message_id_out) override {
     const RuntimeConfig config = loadRuntimeConfig();
     if (user_message_id_out == nullptr || text.empty() || !config.hasThreadId()) {
-      recording_failure_detail_ = "bad-message";
+      setRecordingFailureDetail("bad-message");
       return false;
     }
-    recording_failure_detail_ = "";
-    g_screen.render_screen_recording_sending();
+    setRecordingFailureDetail("");
+    const std::string prompt_text = zero_buddy::preprocessAssistantForDisplay(text);
+    g_screen.render_screen_recording_sending(prompt_text);
     const String body =
-        String("{\"prompt\":\"") + jsonEscape(String(text.c_str())) +
+        String("{\"prompt\":\"") + jsonEscape(String(prompt_text.c_str())) +
         "\",\"threadId\":\"" + config.thread_id + "\"}";
-    String response;
-    if (!httpPostJson(kZeroPostUrl, body, &response, nullptr)) {
-      recording_failure_detail_ = "http";
+    HttpResponse http_response;
+    Serial.printf("message send raw prompt bytes=%u\n", static_cast<unsigned>(text.size()));
+    Serial.printf("message send prompt bytes=%u\n",
+                  static_cast<unsigned>(prompt_text.size()));
+    Serial.printf("message send auth chars=%u source=%s\n",
+                  static_cast<unsigned>(config.auth_token.length()),
+                  config.auth_token_from_compile
+                      ? "compiled"
+                      : (config.auth_token_from_nvs ? "nvs" : "none"));
+    Serial.printf("message send thread chars=%u source=%s\n",
+                  static_cast<unsigned>(config.thread_id.length()),
+                  config.thread_id_from_compile
+                      ? "compiled"
+                      : (config.thread_id_from_nvs ? "nvs" : "none"));
+    if (!httpPostJsonRequest(kZeroPostUrl,
+                             body,
+                             config.auth_token,
+                             &http_response,
+                             nullptr)) {
+      Serial.printf("message send http code=%d\n", http_response.status_code);
+      if (http_response.body.length() > 0) {
+        Serial.print("message send response: ");
+        Serial.println(http_response.body.substring(0, 240));
+      }
+      if (http_response.status_code == 404) {
+        Serial.println("message send thread invalid, retrying without threadId");
+        const String repair_body =
+            String("{\"prompt\":\"") + jsonEscape(String(prompt_text.c_str())) + "\"}";
+        HttpResponse repair_response;
+        if (httpPostJsonRequest(kZeroPostUrl,
+                                repair_body,
+                                config.auth_token,
+                                &repair_response,
+                                nullptr)) {
+          Serial.printf("message send repair http code=%d\n", repair_response.status_code);
+          const std::string repair_message_id =
+              zero_buddy::extractJsonString(repair_response.body.c_str(), "messageId");
+          const String repair_thread_id =
+              String(zero_buddy::extractJsonString(repair_response.body.c_str(),
+                                                   "threadId")
+                         .c_str());
+          if (!repair_message_id.empty() && repair_thread_id.length() > 0 &&
+              repair_thread_id.length() <= kMaxThreadIdChars &&
+              saveRuntimeThreadId(repair_thread_id)) {
+            *user_message_id_out = repair_message_id;
+            return true;
+          }
+          Serial.print("message send repair invalid response: ");
+          Serial.println(repair_response.body.substring(0, 240));
+        } else {
+          Serial.printf("message send repair http code=%d\n",
+                        repair_response.status_code);
+          if (repair_response.body.length() > 0) {
+            Serial.print("message send repair response: ");
+            Serial.println(repair_response.body.substring(0, 240));
+          }
+        }
+      }
+      String detail("http:");
+      detail += http_response.status_code;
+      setRecordingFailureDetail(detail);
       return false;
     }
-    const std::string id = zero_buddy::extractJsonString(response.c_str(), "messageId");
+    Serial.printf("message send http code=%d\n", http_response.status_code);
+    const std::string id =
+        zero_buddy::extractJsonString(http_response.body.c_str(), "messageId");
     if (id.empty()) {
-      recording_failure_detail_ = "message-id";
+      Serial.print("message send missing messageId response: ");
+      Serial.println(http_response.body.substring(0, 240));
+      setRecordingFailureDetail("message-id");
       return false;
     }
     *user_message_id_out = id;
@@ -2084,7 +2066,18 @@ class HardwareRecordingOps : public RecordingOps {
   void closeFiles() override {}
 
  private:
+  void setRecordingFailureDetail(const char* detail) {
+    recording_failure_detail_storage_.remove(0);
+    recording_failure_detail_ = detail;
+  }
+
+  void setRecordingFailureDetail(const String& detail) {
+    recording_failure_detail_storage_ = detail;
+    recording_failure_detail_ = recording_failure_detail_storage_.c_str();
+  }
+
   const char* recording_failure_detail_ = "";
+  String recording_failure_detail_storage_;
 };
 
 void enterDeepSleep();
@@ -2216,25 +2209,28 @@ void setup() {
   ledcAttachPin(kBuzzerPin, 0);
   ledcWriteTone(0, 0);
 
+  const bool had_rtc_state = g_rtc_magic == kRtcMagic && stateLooksValid(g_state);
+  const auto previous_mode =
+      had_rtc_state ? g_state.currentMode : zero_buddy::state::Mode::DeepSleep;
+
   setCpu(kRecordingCpuMhz);
   LittleFS.begin(true);
   ensureGlobalStateInitialized();
   zero_buddy::state::setHasAssistantMessage(&g_state, assistant_message_exists());
 
   const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
-  if (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+  const bool external_power_wake =
+      wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED && had_rtc_state &&
+      previous_mode == zero_buddy::state::Mode::DeepSleep &&
+      externalPowerConnected();
+
+  if (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED && !external_power_wake) {
     g_screen.render_screen_boot();
     restartAwareDelay(kBootSplashMs);
   }
 
-  runBootPreflight();
-
-  if (wake_cause == ESP_SLEEP_WAKEUP_TIMER) {
-    runCheckAssistantThenSleep();
-    return;
-  }
-
   if (wake_cause == ESP_SLEEP_WAKEUP_EXT0 || buttonADown()) {
+    g_screen.screenOn();
     if (waitForBtnALongPress(kLongPressMs)) {
       runRecordingThenSleep();
       return;
@@ -2243,6 +2239,18 @@ void setup() {
     return;
   }
 
+  if (wake_cause == ESP_SLEEP_WAKEUP_TIMER) {
+    runCheckAssistantThenSleep();
+    return;
+  }
+
+  if (external_power_wake) {
+    g_screen.screenOn();
+    runReadThenSleep();
+    return;
+  }
+
+  runBootPreflight();
   runReadThenSleep();
 }
 

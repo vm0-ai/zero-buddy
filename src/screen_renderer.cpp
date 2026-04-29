@@ -298,10 +298,32 @@ void ScreenRenderer::render_screen_recording_transcribing() {
                                 "speech to text");
 }
 
-void ScreenRenderer::render_screen_recording_sending() {
-  render_screen_avatar_dialogue(state::RenderScreenKind::RecordingSending,
-                                "recording",
-                                "send message");
+void ScreenRenderer::render_screen_recording_sending(const std::string& user_text) {
+  state::RenderScreenState next;
+  next.kind = state::RenderScreenKind::RecordingSending;
+  next.value1 = hashText("sending");
+  next.value2 = hashString(user_text);
+  next.value4 = kZeroAvatarScale;
+
+  const state::RenderScreenState previous = currentRenderState();
+  if (state::sameRenderScreenState(previous, next)) {
+    render_element_battery_level();
+    return;
+  }
+  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
+  commitRenderState(next);
+  if (!reuse_shell) {
+    resetElementState();
+  }
+
+  const AvatarDialogueLayout layout =
+      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
+  render_element_recording_sending_text(user_text,
+                                        layout.bubble_x,
+                                        layout.bubble_y,
+                                        layout.bubble_w,
+                                        layout.bubble_h);
+  render_element_battery_level();
 }
 
 void ScreenRenderer::render_screen_recording_sent() {
@@ -317,7 +339,31 @@ void ScreenRenderer::render_screen_recording_aborted() {
 }
 
 void ScreenRenderer::render_screen_recording_failed(const char* detail) {
-  render_screen_avatar_dialogue(state::RenderScreenKind::RecordingFailed, "failed", detail);
+  state::RenderScreenState next;
+  next.kind = state::RenderScreenKind::RecordingFailed;
+  next.value1 = hashText("failed");
+  next.value2 = hashText(detail);
+  next.value4 = kZeroAvatarScale;
+
+  const state::RenderScreenState previous = currentRenderState();
+  if (state::sameRenderScreenState(previous, next)) {
+    render_element_battery_level();
+    return;
+  }
+  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
+  commitRenderState(next);
+  if (!reuse_shell) {
+    resetElementState();
+  }
+
+  const AvatarDialogueLayout layout =
+      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
+  render_element_recording_failed_text(detail,
+                                       layout.bubble_x,
+                                       layout.bubble_y,
+                                       layout.bubble_w,
+                                       layout.bubble_h);
+  render_element_battery_level();
 }
 
 void ScreenRenderer::render_screen_setup_wifi(const char* device_name, const char* setup_url) {
@@ -641,6 +687,64 @@ void ScreenRenderer::render_element_setup_device_code_countdown(uint32_t seconds
   const int countdown_y = block_y + 80;
   M5.Display.fillRect(text_x, countdown_y, text_w, 12, TFT_WHITE);
   printFittedLine(countdown, text_x, countdown_y, text_w);
+}
+
+void ScreenRenderer::render_element_recording_sending_text(
+    const std::string& user_text,
+    int bubble_x,
+    int bubble_y,
+    int bubble_w,
+    int bubble_h) {
+  const uint16_t border = dialogueBorderColor();
+  const int text_x = bubble_x + 10;
+  const int title_y = bubble_y + 12;
+  const int text_y = bubble_y + 44;
+  const int text_w = bubble_w - 20;
+  const int text_h = std::max(1, bubble_y + bubble_h - text_y - 10);
+
+  M5.Display.setTextWrap(false);
+  M5.Display.setTextColor(border, TFT_WHITE);
+  M5.Display.setFont(&fonts::Font2);
+  printFittedLine("sending", text_x, title_y, text_w, true);
+
+  M5.Display.setClipRect(text_x, text_y, text_w, text_h);
+  M5.Display.setTextColor(border, TFT_WHITE);
+  M5.Display.setFont(&fonts::efontCN_12);
+  renderWrappedChatText(user_text, text_x, text_y, text_w, 0);
+  M5.Display.clearClipRect();
+  M5.Display.setTextWrap(false);
+}
+
+void ScreenRenderer::render_element_recording_failed_text(const char* detail,
+                                                          int bubble_x,
+                                                          int bubble_y,
+                                                          int bubble_w,
+                                                          int bubble_h) {
+  const uint16_t border = dialogueBorderColor();
+  String detail_text(detail != nullptr ? detail : "");
+  String line1 = detail_text;
+  String line2;
+  const int separator = detail_text.indexOf(':');
+  if (separator >= 0) {
+    line1 = detail_text.substring(0, separator);
+    line2 = detail_text.substring(separator + 1);
+  }
+
+  const int text_x = bubble_x + 10;
+  const int text_w = bubble_w - 20;
+  const int block_h = line2.length() > 0 ? 70 : 50;
+  const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
+
+  M5.Display.setTextWrap(false);
+  M5.Display.setTextColor(border, TFT_WHITE);
+  M5.Display.setFont(&fonts::Font2);
+  printFittedLine("failed", text_x, block_y, text_w, true);
+
+  M5.Display.setFont(&fonts::Font0);
+  printFittedLine(line1.c_str(), text_x, block_y + 34, text_w);
+  if (line2.length() > 0) {
+    printFittedLine(line2.c_str(), text_x, block_y + 52, text_w);
+  }
 }
 
 void ScreenRenderer::render_element_chat_header(size_t index, size_t count) {

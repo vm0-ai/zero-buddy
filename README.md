@@ -2,24 +2,29 @@
 
 M5StickC Plus voice companion firmware.
 
-It records audio with the onboard microphone, streams ASR directly to Doubao,
-sends recognized text to a Zero chat thread, and polls the thread for assistant
-messages to show on the device screen.
+It records raw PCM audio with the onboard microphone, sends it to Zero's
+transcription API, sends recognized text to a Zero chat thread, and polls the
+thread for assistant messages to show on the device screen.
 
 ## Setup
 
 1. Install PlatformIO.
-2. Copy `src/secrets.example.h` to `src/secrets.h`.
-3. Fill in Doubao ASR credentials in `src/secrets.h`.
-   Wi-Fi, Zero auth token, and Zero thread id are provisioned at runtime and
-   stored in NVS.
-4. Build and upload:
+2. Build and upload:
 
 ```sh
 pio run -t upload
 ```
 
-`src/secrets.h` is intentionally ignored by git.
+Wi-Fi, Zero auth token, Zero thread id, and transcription auth are provisioned
+at runtime and stored in NVS. `src/secrets.h` is still ignored by git for local
+experiments, but no secret is required for the normal firmware build.
+
+For a pre-provisioned build, copy `src/secrets.example.h` to `src/secrets.h`
+and fill the optional `ZERO_BUDDY_WIFI_SSID`, `ZERO_BUDDY_WIFI_PASSWORD`,
+`ZERO_BUDDY_PAT`, and `ZERO_BUDDY_THREAD_ID` macros. Runtime Wi-Fi in NVS still
+takes precedence over compile-time Wi-Fi. A compile-time PAT or thread id, when
+provided, is treated as the firmware source of truth and is not overridden by
+older NVS auth or thread values.
 
 To reset runtime provisioning, hold BtnA and press BtnB. This clears the runtime
 NVS config and starts setup again. Holding BtnA + BtnB through boot performs the

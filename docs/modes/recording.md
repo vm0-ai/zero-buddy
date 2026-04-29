@@ -66,7 +66,11 @@ It does not own:
    - If Wi-Fi cannot be connected, finish with a failure result and let the state machine transition, currently to `DeepSleep`.
 
 7. Convert voice to text.
-   - Send or replay the recorded voice file to the ASR provider.
+   - Send the recorded raw PCM file to Zero's transcription API:
+     `POST https://api.vm0.ai/api/v1/audio/transcriptions`.
+   - Use `Authorization: Bearer <runtime auth_token>` and
+     `Content-Type: application/octet-stream`.
+   - The request body is raw PCM bytes, not a WAV container.
    - Produce recognized text.
    - If transcription succeeds, delete the temporary voice file from LittleFS.
    - If transcription fails, delete the temporary voice file before returning.

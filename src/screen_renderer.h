@@ -30,7 +30,7 @@ class ScreenRenderer {
   void render_screen_recording_active();
   void render_screen_recording_wifi();
   void render_screen_recording_transcribing();
-  void render_screen_recording_sending();
+  void render_screen_recording_sending(const std::string& user_text);
   void render_screen_recording_sent();
   void render_screen_recording_aborted();
   void render_screen_recording_failed(const char* detail);
@@ -77,6 +77,16 @@ class ScreenRenderer {
                                                   int bubble_y,
                                                   int bubble_w,
                                                   int bubble_h);
+  void render_element_recording_sending_text(const std::string& user_text,
+                                             int bubble_x,
+                                             int bubble_y,
+                                             int bubble_w,
+                                             int bubble_h);
+  void render_element_recording_failed_text(const char* detail,
+                                            int bubble_x,
+                                            int bubble_y,
+                                            int bubble_w,
+                                            int bubble_h);
   void render_element_chat_header(size_t index, size_t count);
   void render_element_chat_message(const std::string& message, size_t scroll_top);
   void render_element_next_page_arrow();

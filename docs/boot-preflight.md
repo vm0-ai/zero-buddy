@@ -13,8 +13,22 @@ Runtime configuration is stored in NVS namespace `zero_runtime`.
 - `auth_token`
 - `thread_id`
 
-ASR credentials stay in firmware secrets. Wi-Fi, Zero auth, and Zero thread are
-not compile-time values.
+Wi-Fi, Zero auth, Zero thread, and transcription auth are not compile-time
+values. Speech transcription uses the runtime `auth_token` as a PAT.
+
+The firmware may also be built with optional compile-time defaults:
+
+- `ZERO_BUDDY_WIFI_SSID`
+- `ZERO_BUDDY_WIFI_PASSWORD`
+- `ZERO_BUDDY_PAT`
+- `ZERO_BUDDY_THREAD_ID`
+
+The effective Wi-Fi config is derived as `NVS value ?? compile-time default`.
+For auth, a compile-time `ZERO_BUDDY_PAT` or `ZERO_BUDDY_THREAD_ID` takes
+precedence over NVS so older runtime auth cannot override a pre-provisioned
+firmware build. If Wi-Fi, PAT, and thread id are provided at compile time and
+still validate at boot, preflight can complete without provisioning and enter
+normal `Read` mode directly.
 
 ## Reset
 
@@ -46,13 +60,13 @@ Wi-Fi failure does not clear `auth_token` or `thread_id`.
 Goal: obtain usable Zero auth.
 
 1. If `auth_token` is missing, request a bb0 device code over HTTPS:
-   - `POST https://vm0-api.vm6.ai/api/device-token`
+   - `POST https://api.vm0.ai/api/device-token`
    - body:
      `{"device_type":"bb0","device_id":"Zero-Buddy-F1B4","firmware_version":"0.1.0"}`
 2. The response must include `device_code`, `poll_token`, `expires_in`, and
    `interval`.
 3. Display the returned `device_code` with a 5 minute countdown.
-4. Poll `POST https://vm0-api.vm6.ai/api/device-token/poll` with
+4. Poll `POST https://api.vm0.ai/api/device-token/poll` with
    `device_code` and `poll_token` until the server returns `api_token` and
    `thread_id`.
 5. Persist both values to NVS as soon as they are received.

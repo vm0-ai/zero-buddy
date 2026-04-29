@@ -12,19 +12,19 @@ The rewritten firmware starts with four core modes:
   - RTC wake transitions to `CheckAssistantMessage`.
   - BtnA short press transitions to `Read`.
   - BtnA long press transitions to `Recording`.
-  - After scheduling the next RTC wake, if charging is detected, it schedules a runtime assistant-check timer and transitions directly to `Read` instead of hibernating.
+  - If charging is detected before sleep preparation, the state machine returns to `Read` without scheduling an RTC wake.
 
 - `CheckAssistantMessage`
   - Checks whether the assistant has a new message or notification.
   - This is a short-lived task mode.
-  - After the check completes, it automatically transitions back to `DeepSleep`.
+  - After the check completes, it transitions to `DeepSleep` when unplugged or returns to `Read` when plugged.
   - If BtnA short press is detected during the check, the check is aborted before entering `Read`.
   - If BtnA long press is detected during the check, the check is aborted before entering `Recording`.
 
 - `Recording`
   - Handles audio recording.
   - Entered from `DeepSleep`, `CheckAssistantMessage`, or `Read` via BtnA long press.
-  - After recording completes, it automatically transitions to `DeepSleep`.
+  - After recording completes, it transitions to `DeepSleep` when unplugged or returns to `Read` when plugged.
   - Includes transcription, user message sending, cursor update, and check backoff reset.
 
 - `Read`
@@ -33,8 +33,7 @@ The rewritten firmware starts with four core modes:
   - Turns the screen on, sets the CPU to a display-safe frequency, and renders either the current assistant message or an empty state.
   - BtnA short press scrolls the current message, then advances through later messages until everything is read.
   - BtnA long press aborts reading before entering `Recording`.
-  - If it was entered from the charging path, the runtime assistant-check timer can abort reading before entering `CheckAssistantMessage`.
-  - When reading completes or idles out, it transitions back to `DeepSleep`.
+  - When reading completes or idles out, it transitions to `DeepSleep` when unplugged or `CheckAssistantMessage` when plugged.
 
 ## Lifecycle Contract
 
@@ -120,8 +119,8 @@ struct GlobalState {
   - When moving between two dialogue-bubble screen kinds, the renderer should
     keep that shell and redraw only the bubble's interior content whenever the
     layout has not changed.
-  - Examples include `Boot`, `ReadEmpty`, all `Recording*` status screens,
-    `SetupWifi`, `SetupDeviceCode`, and `SetupStatus`.
+  - Examples include `Boot`, `ReadEmpty`, `CheckingMessages`, all `Recording*`
+    status screens, `SetupWifi`, `SetupDeviceCode`, and `SetupStatus`.
   - Current full-screen render kinds:
     - `Boot`
     - `ReadEmpty`
@@ -134,6 +133,7 @@ struct GlobalState {
     - `RecordingSent`
     - `RecordingAborted`
     - `RecordingFailed`
+    - `CheckingMessages`
     - `SetupWifi`
     - `SetupDeviceCode`
     - `SetupStatus`
@@ -185,20 +185,21 @@ The core flow is:
 stateDiagram-v2
     [*] --> DeepSleep
 
-    DeepSleep --> CheckAssistantMessage: RTC wake
-    CheckAssistantMessage --> DeepSleep: check complete
+    DeepSleep --> CheckAssistantMessage: RTC wake, unplugged
+    CheckAssistantMessage --> DeepSleep: check complete, unplugged
+    CheckAssistantMessage --> Read: check complete, plugged
 
     DeepSleep --> Read: BtnA short press
-    DeepSleep --> Read: charging detected after RTC setup
-    Read --> CheckAssistantMessage: runtime check timer while charging
-    Read --> DeepSleep: read complete / idle timeout
+    Read --> CheckAssistantMessage: read complete / idle timeout, plugged
+    Read --> DeepSleep: read complete / idle timeout, unplugged
 
     DeepSleep --> Recording: BtnA long press
     CheckAssistantMessage --> Read: BtnA short press / abort check
     CheckAssistantMessage --> Recording: BtnA long press / abort check
     Read --> Recording: BtnA long press / abort read
 
-    Recording --> DeepSleep: recording complete
+    Recording --> DeepSleep: recording complete, unplugged
+    Recording --> Read: recording complete, plugged
 ```
 
 ## Event Rules
@@ -219,26 +220,22 @@ stateDiagram-v2
   - Inside `Read`, this is handled by the mode to scroll the current assistant message or advance to the next assistant message.
 
 - `ChargingDetected`
-  - Only valid in `DeepSleep`.
-  - Fired after `DeepSleep` schedules the RTC wake.
-  - Starts a runtime assistant-check timer using the same `checkDelayMs`.
-  - Transitions directly to `Read` instead of entering ESP32 deep sleep.
-
-- `CheckDue`
-  - Valid while `Read` is being used as the foreground charging mode.
-  - Aborts `Read` with `check_due`, clears the runtime assistant-check timer, and enters `CheckAssistantMessage`.
+  - Handled by the outer state machine before entering `DeepSleep`.
+  - When plugged, mode completion returns to `Read` instead of going through `DeepSleep`.
+  - No RTC wake is scheduled while the device remains plugged.
 
 - `CheckComplete`
   - Only valid in `CheckAssistantMessage`.
-  - Transitions to `DeepSleep`.
+  - Transitions to `DeepSleep` when unplugged or `Read` when plugged.
 
 - `ReadComplete`
   - Only valid in `Read`.
-  - Transitions to `DeepSleep`.
+  - Transitions to `DeepSleep` when unplugged.
+  - While plugged, the state machine runs `CheckAssistantMessage` and returns to `Read`.
 
 - `RecordingComplete`
   - Only valid in `Recording`.
-  - Transitions to `DeepSleep`.
+  - Transitions to `DeepSleep` when unplugged or `Read` when plugged.
 
 ## Transition Procedure
 
@@ -250,7 +247,7 @@ A transition follows a fixed sequence:
 4. Update the current mode.
 5. Call the new mode's `enter(context)`.
 
-`CheckAssistantMessage -> Read`, `CheckAssistantMessage -> Recording`, `Read -> CheckAssistantMessage`, and `Read -> Recording` require an explicit mid-flight abort. The check may be performing network work, so it must call `abort("btn_a_short_press")` before entering `Read` or `abort("btn_a_long_press")` before entering `Recording`. Read may be waiting for user input or holding file/display resources, so it also aborts first.
+`CheckAssistantMessage -> Read`, `CheckAssistantMessage -> Recording`, and `Read -> Recording` require an explicit mid-flight abort. The check may be performing network work, so it must call `abort("btn_a_short_press")` before entering `Read` or `abort("btn_a_long_press")` before entering `Recording`. Read may be waiting for user input or holding file/display resources, so it also aborts before entering `Recording`. `Read -> CheckAssistantMessage` while plugged happens after `Read` completes normally.
 
 ## Initial Scope
 

@@ -34,6 +34,7 @@ class ScreenRenderer {
   void render_screen_recording_sent();
   void render_screen_recording_aborted();
   void render_screen_recording_failed(const char* detail);
+  void render_screen_checking_messages();
   void render_screen_setup_wifi();
   void render_screen_setup_device_code(const char* device_code);
   void render_screen_setup_status(const char* line1, const char* line2);
@@ -50,37 +51,6 @@ class ScreenRenderer {
                                       int bubble_h,
                                       int tail_x,
                                       int tail_y);
-  void render_element_bubble_text(const char* line1,
-                                  const char* line2,
-                                  int x,
-                                  int y,
-                                  int width,
-                                  bool large_title);
-  void render_element_setup_status_text(const char* line1,
-                                        const char* line2,
-                                        int bubble_x,
-                                        int bubble_y,
-                                        int bubble_w,
-                                        int bubble_h);
-  void render_element_setup_wifi_text(int bubble_x,
-                                      int bubble_y,
-                                      int bubble_w,
-                                      int bubble_h);
-  void render_element_setup_device_code_text(const char* device_code,
-                                             int bubble_x,
-                                             int bubble_y,
-                                             int bubble_w,
-                                             int bubble_h);
-  void render_element_recording_sending_text(const std::string& user_text,
-                                             int bubble_x,
-                                             int bubble_y,
-                                             int bubble_w,
-                                             int bubble_h);
-  void render_element_recording_failed_text(const char* detail,
-                                            int bubble_x,
-                                            int bubble_y,
-                                            int bubble_w,
-                                            int bubble_h);
   void render_element_chat_header(size_t index, size_t count);
   void render_element_chat_message(const std::string& message, size_t scroll_top);
   void render_element_next_page_arrow();
@@ -117,16 +87,46 @@ class ScreenRenderer {
   bool sameRenderState(const state::RenderScreenState& next) const;
   void resetElementState();
 
-  void render_screen_avatar_dialogue(state::RenderScreenKind kind,
-                                     const char* line1,
-                                     const char* line2,
-                                     bool large_title = false,
-                                     uint8_t avatar_scale = 2);
-  void render_avatar_dialogue_body(const char* line1,
-                                   const char* line2,
-                                   bool large_title,
-                                   uint8_t avatar_scale,
-                                   bool reuse_shell);
+  bool prepare_avatar_dialogue_screen(const state::RenderScreenState& next,
+                                      uint8_t avatar_scale,
+                                      AvatarDialogueLayout* layout_out);
+  void render_avatar_layout_brand(state::RenderScreenKind kind, const char* title);
+  void render_avatar_layout_instruction(state::RenderScreenKind kind,
+                                        const char* line1,
+                                        const char* emphasis,
+                                        const char* line3,
+                                        uint8_t emphasis_scale);
+  void render_avatar_layout_status(state::RenderScreenKind kind,
+                                   const char* title,
+                                   const char* detail);
+  void render_avatar_layout_preview(state::RenderScreenKind kind,
+                                    const char* title,
+                                    const std::string& body);
+  void render_element_brand_text(const char* title,
+                                 int bubble_x,
+                                 int bubble_y,
+                                 int bubble_w,
+                                 int bubble_h);
+  void render_element_instruction_text(const char* line1,
+                                       const char* emphasis,
+                                       const char* line3,
+                                       uint8_t emphasis_scale,
+                                       int bubble_x,
+                                       int bubble_y,
+                                       int bubble_w,
+                                       int bubble_h);
+  void render_element_status_pair_text(const char* title,
+                                       const char* detail,
+                                       int bubble_x,
+                                       int bubble_y,
+                                       int bubble_w,
+                                       int bubble_h);
+  void render_element_preview_text(const char* title,
+                                   const std::string& body,
+                                   int bubble_x,
+                                   int bubble_y,
+                                   int bubble_w,
+                                   int bubble_h);
   bool isAvatarDialogueScreenKind(state::RenderScreenKind kind) const;
   bool canReuseAvatarDialogueShell(const state::RenderScreenState& previous,
                                    uint8_t avatar_scale) const;

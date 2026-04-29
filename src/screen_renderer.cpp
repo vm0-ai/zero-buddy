@@ -158,6 +158,22 @@ void printFittedLine(const char* text, int x, int y, int max_width, bool bold = 
   }
 }
 
+void printCenteredFittedLine(const char* text,
+                             int x,
+                             int y,
+                             int max_width,
+                             bool bold = false) {
+  const String line = fittedLine(text, max_width);
+  const int line_x =
+      x + std::max(0, (max_width - M5.Display.textWidth(line.c_str())) / 2);
+  M5.Display.setCursor(line_x, y);
+  M5.Display.print(line);
+  if (bold && line.length() > 0) {
+    M5.Display.setCursor(line_x + 1, y);
+    M5.Display.print(line);
+  }
+}
+
 const uint8_t* tinyFontGlyphFor(char ch) {
   if (ch >= 'a' && ch <= 'z') {
     ch = static_cast<char>(ch - 'a' + 'A');
@@ -244,15 +260,13 @@ void ScreenRenderer::screenOff() {
 }
 
 void ScreenRenderer::render_screen_boot() {
-  render_screen_avatar_dialogue(state::RenderScreenKind::Boot,
-                                "Zero",
-                                "your trustworthy AI teammate",
-                                true,
-                                kZeroAvatarScale);
+  render_avatar_layout_brand(state::RenderScreenKind::Boot, "Zero");
 }
 
 void ScreenRenderer::render_screen_read_empty() {
-  render_screen_avatar_dialogue(state::RenderScreenKind::ReadEmpty, "no message", "");
+  render_avatar_layout_status(state::RenderScreenKind::ReadEmpty,
+                              "all caught up",
+                              "no message");
 }
 
 void ScreenRenderer::render_screen_read_message(size_t index,
@@ -297,179 +311,78 @@ void ScreenRenderer::render_screen_read_message(size_t index,
 }
 
 void ScreenRenderer::render_screen_recording_prompt() {
-  render_screen_avatar_dialogue(state::RenderScreenKind::RecordingPrompt,
-                                "recording",
-                                "hold BtnA");
+  render_avatar_layout_status(state::RenderScreenKind::RecordingPrompt,
+                              "recording",
+                              "hold BtnA");
 }
 
 void ScreenRenderer::render_screen_recording_active() {
-  render_screen_avatar_dialogue(state::RenderScreenKind::RecordingActive,
-                                "recording",
-                                "speak now");
+  render_avatar_layout_status(state::RenderScreenKind::RecordingActive,
+                              "listening",
+                              "speak now...");
 }
 
 void ScreenRenderer::render_screen_recording_wifi() {
-  render_screen_avatar_dialogue(state::RenderScreenKind::RecordingWifi, "recording", "wifi");
+  render_avatar_layout_status(state::RenderScreenKind::RecordingWifi,
+                              "connecting",
+                              "Wi-Fi...");
 }
 
 void ScreenRenderer::render_screen_recording_transcribing() {
-  render_screen_avatar_dialogue(state::RenderScreenKind::RecordingTranscribing,
-                                "recording",
-                                "speech to text");
+  render_avatar_layout_status(state::RenderScreenKind::RecordingTranscribing,
+                              "thinking",
+                              "speech to text...");
 }
 
 void ScreenRenderer::render_screen_recording_sending(const std::string& user_text) {
-  state::RenderScreenState next;
-  next.kind = state::RenderScreenKind::RecordingSending;
-  next.value1 = hashText("sending");
-  next.value2 = hashString(user_text);
-  next.value4 = kZeroAvatarScale;
-
-  const state::RenderScreenState previous = currentRenderState();
-  if (sameRenderScreenState(previous, next)) {
-    render_element_battery_level();
-    return;
-  }
-  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
-  commitRenderState(next);
-  if (!reuse_shell) {
-    resetElementState();
-  }
-
-  const AvatarDialogueLayout layout =
-      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
-  render_element_recording_sending_text(user_text,
-                                        layout.bubble_x,
-                                        layout.bubble_y,
-                                        layout.bubble_w,
-                                        layout.bubble_h);
-  render_element_battery_level();
+  render_avatar_layout_preview(state::RenderScreenKind::RecordingSending,
+                               "sending",
+                               user_text);
 }
 
 void ScreenRenderer::render_screen_recording_sent() {
-  render_screen_avatar_dialogue(state::RenderScreenKind::RecordingSent,
-                                "sent",
-                                "message sent");
+  render_avatar_layout_status(state::RenderScreenKind::RecordingSent,
+                              "sent",
+                              "message sent");
 }
 
 void ScreenRenderer::render_screen_recording_aborted() {
-  render_screen_avatar_dialogue(state::RenderScreenKind::RecordingAborted,
-                                "aborted",
-                                "recording");
+  render_avatar_layout_status(state::RenderScreenKind::RecordingAborted,
+                              "aborted",
+                              "recording");
 }
 
 void ScreenRenderer::render_screen_recording_failed(const char* detail) {
-  state::RenderScreenState next;
-  next.kind = state::RenderScreenKind::RecordingFailed;
-  next.value1 = hashText("failed");
-  next.value2 = hashText(detail);
-  next.value4 = kZeroAvatarScale;
+  render_avatar_layout_preview(state::RenderScreenKind::RecordingFailed,
+                               "failed",
+                               detail != nullptr ? detail : "");
+}
 
-  const state::RenderScreenState previous = currentRenderState();
-  if (sameRenderScreenState(previous, next)) {
-    render_element_battery_level();
-    return;
-  }
-  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
-  commitRenderState(next);
-  if (!reuse_shell) {
-    resetElementState();
-  }
-
-  const AvatarDialogueLayout layout =
-      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
-  render_element_recording_failed_text(detail,
-                                       layout.bubble_x,
-                                       layout.bubble_y,
-                                       layout.bubble_w,
-                                       layout.bubble_h);
-  render_element_battery_level();
+void ScreenRenderer::render_screen_checking_messages() {
+  render_avatar_layout_status(state::RenderScreenKind::CheckingMessages,
+                              "checking",
+                              "messages...");
 }
 
 void ScreenRenderer::render_screen_setup_wifi() {
-  state::RenderScreenState next;
-  next.kind = state::RenderScreenKind::SetupWifi;
-  next.value1 = hashText("visit");
-  next.value2 = hashText("BB0.AI");
-  next.value3 = hashText("in Google Chrome");
-  next.value4 = kZeroAvatarScale;
-  const state::RenderScreenState previous = currentRenderState();
-  if (sameRenderState(next)) {
-    render_element_battery_level();
-    return;
-  }
-  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
-  commitRenderState(next);
-  if (!reuse_shell) {
-    resetElementState();
-  }
-
-  const AvatarDialogueLayout layout =
-      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
-  render_element_setup_wifi_text(layout.bubble_x,
-                                 layout.bubble_y,
-                                 layout.bubble_w,
-                                 layout.bubble_h);
-  render_element_battery_level();
+  render_avatar_layout_instruction(state::RenderScreenKind::SetupWifi,
+                                   "visit",
+                                   "BB0.AI",
+                                   "in Google Chrome",
+                                   kTinyFontScale);
 }
 
 void ScreenRenderer::render_screen_setup_device_code(const char* device_code) {
   const String display_code = uppercaseAscii(device_code);
-  state::RenderScreenState next;
-  next.kind = state::RenderScreenKind::SetupDeviceCode;
-  next.value1 = hashText(display_code.c_str());
-  next.value2 = hashText("device-code-uppercase-v2");
-  next.value4 = kZeroAvatarScale;
-
-  const state::RenderScreenState previous = currentRenderState();
-  if (sameRenderScreenState(previous, next)) {
-    render_element_battery_level();
-    return;
-  }
-
-  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
-  commitRenderState(next);
-
-  screenOn();
-  if (!reuse_shell) {
-    resetElementState();
-  }
-  const AvatarDialogueLayout drawn_layout =
-      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
-  render_element_setup_device_code_text(display_code.c_str(),
-                                        drawn_layout.bubble_x,
-                                        drawn_layout.bubble_y,
-                                        drawn_layout.bubble_w,
-                                        drawn_layout.bubble_h);
-  render_element_battery_level();
+  render_avatar_layout_instruction(state::RenderScreenKind::SetupDeviceCode,
+                                   "INPUT",
+                                   display_code.c_str(),
+                                   "IN BB0.AI",
+                                   2);
 }
 
 void ScreenRenderer::render_screen_setup_status(const char* line1, const char* line2) {
-  state::RenderScreenState next;
-  next.kind = state::RenderScreenKind::SetupStatus;
-  next.value1 = hashText(line1);
-  next.value2 = hashText(line2);
-  next.value4 = kZeroAvatarScale;
-  const state::RenderScreenState previous = currentRenderState();
-  if (sameRenderState(next)) {
-    render_element_battery_level();
-    return;
-  }
-  const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
-  commitRenderState(next);
-  if (!reuse_shell) {
-    resetElementState();
-  }
-
-  const AvatarDialogueLayout layout =
-      render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
-  render_element_setup_status_text(line1,
-                                   line2,
-                                   layout.bubble_x,
-                                   layout.bubble_y,
-                                   layout.bubble_w,
-                                   layout.bubble_h);
-  render_element_battery_level();
+  render_avatar_layout_status(state::RenderScreenKind::SetupStatus, line1, line2);
 }
 
 void ScreenRenderer::render_element_battery_level() {
@@ -558,131 +471,91 @@ void ScreenRenderer::render_element_dialogue_bubble(int bubble_x,
                           border);
 }
 
-void ScreenRenderer::render_element_bubble_text(const char* line1,
-                                                const char* line2,
-                                                int x,
-                                                int y,
-                                                int width,
-                                                bool large_title) {
+void ScreenRenderer::render_element_brand_text(const char* title,
+                                               int bubble_x,
+                                               int bubble_y,
+                                               int bubble_w,
+                                               int bubble_h) {
   const uint16_t border = dialogueBorderColor();
   M5.Display.setTextColor(border, TFT_WHITE);
   M5.Display.setTextWrap(false);
-  if (large_title) {
-    M5.Display.setFont(&fonts::Font4);
-    printFittedLine(line1, x, y + 13, width, true);
-    M5.Display.setFont(&fonts::Font0);
-    printFittedLine(line2, x, y + 67, width);
-    return;
-  }
+  M5.Display.setFont(&fonts::Font4);
 
-  M5.Display.setFont(&fonts::Font2);
-  printFittedLine(line1, x, y + 7, width);
-  if (line2 != nullptr && line2[0] != '\0') {
-    M5.Display.setFont(&fonts::Font0);
-    printFittedLine(line2, x, y + 37, width);
-  }
-}
-
-void ScreenRenderer::render_element_setup_status_text(const char* line1,
-                                                      const char* line2,
-                                                      int bubble_x,
-                                                      int bubble_y,
-                                                      int bubble_w,
-                                                      int bubble_h) {
-  const uint16_t border = dialogueBorderColor();
-  M5.Display.setTextColor(border, TFT_WHITE);
-  M5.Display.setTextWrap(false);
-
+  constexpr int kFont4Height = 26;
   const int text_x = bubble_x + 10;
   const int text_w = bubble_w - 20;
-  const int block_h = (line2 != nullptr && line2[0] != '\0') ? 54 : 28;
+  const int text_y = bubble_y + std::max(0, (bubble_h - kFont4Height) / 2);
+  printCenteredFittedLine(title, text_x, text_y, text_w, true);
+}
+
+void ScreenRenderer::render_element_instruction_text(const char* line1,
+                                                     const char* emphasis,
+                                                     const char* line3,
+                                                     uint8_t emphasis_scale,
+                                                     int bubble_x,
+                                                     int bubble_y,
+                                                     int bubble_w,
+                                                     int bubble_h) {
+  const uint16_t border = dialogueBorderColor();
+  M5.Display.setTextColor(border, TFT_WHITE);
+  M5.Display.setTextWrap(false);
+
+  emphasis_scale = std::max<uint8_t>(1, emphasis_scale);
+  constexpr int kInstructionLineGap = 12;
+  const int text_x = bubble_x + 9;
+  const int text_w = bubble_w - 18;
+  const int normal_h = 20;
+  const int emphasis_h = kTinyFontGlyphHeight * emphasis_scale;
+  const int block_h = normal_h * 2 + emphasis_h + kInstructionLineGap * 2;
+  const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
+
+  auto drawCenteredTiny = [&](const char* text, int y, uint8_t scale) {
+    const int text_width =
+        tinyFontTextWidth(text, scale, kTinyFontSpacing);
+    const int x = text_x + std::max(0, (text_w - text_width) / 2);
+    drawTinyFontText(text, x, y, scale, kTinyFontSpacing, border);
+  };
+
+  M5.Display.setFont(&fonts::Font2);
+  printCenteredFittedLine(line1, text_x, block_y, text_w);
+  drawCenteredTiny(emphasis, block_y + normal_h + kInstructionLineGap, emphasis_scale);
+  M5.Display.setFont(&fonts::Font2);
+  printCenteredFittedLine(line3,
+                          text_x,
+                          block_y + normal_h + kInstructionLineGap +
+                              emphasis_h + kInstructionLineGap,
+                          text_w);
+}
+
+void ScreenRenderer::render_element_status_pair_text(const char* title,
+                                                     const char* detail,
+                                                     int bubble_x,
+                                                     int bubble_y,
+                                                     int bubble_w,
+                                                     int bubble_h) {
+  const uint16_t border = dialogueBorderColor();
+  M5.Display.setTextColor(border, TFT_WHITE);
+  M5.Display.setTextWrap(false);
+
+  const bool has_detail = detail != nullptr && detail[0] != '\0';
+  const int text_x = bubble_x + 10;
+  const int text_w = bubble_w - 20;
+  const int block_h = has_detail ? 54 : 24;
   const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
   M5.Display.setFont(&fonts::Font2);
-  printFittedLine(line1, text_x, block_y, text_w, true);
-  if (line2 != nullptr && line2[0] != '\0') {
+  printCenteredFittedLine(title, text_x, block_y, text_w, true);
+  if (has_detail) {
     M5.Display.setFont(&fonts::Font0);
-    printFittedLine(line2, text_x, block_y + 38, text_w);
+    printCenteredFittedLine(detail, text_x, block_y + 38, text_w);
   }
 }
 
-void ScreenRenderer::render_element_setup_wifi_text(int bubble_x,
-                                                    int bubble_y,
-                                                    int bubble_w,
-                                                    int bubble_h) {
-  const uint16_t border = dialogueBorderColor();
-  M5.Display.setTextColor(border, TFT_WHITE);
-  M5.Display.setTextWrap(false);
-
-  auto printCentered = [&](const char* text, int y, bool bold) {
-    const int width = bubble_w - 18;
-    const int x = bubble_x + 9 + std::max(0, (width - M5.Display.textWidth(text)) / 2);
-    M5.Display.setCursor(x, y);
-    M5.Display.print(text);
-    if (bold) {
-      M5.Display.setCursor(x + 1, y);
-      M5.Display.print(text);
-    }
-  };
-
-  auto printCenteredTiny = [&](const char* text, int y) {
-    const int width = bubble_w - 18;
-    const int text_width = tinyFontTextWidth(text, kTinyFontScale, kTinyFontSpacing);
-    const int x = bubble_x + 9 + std::max(0, (width - text_width) / 2);
-    drawTinyFontText(text, x, y, kTinyFontScale, kTinyFontSpacing, border);
-  };
-
-  constexpr int kBlockHeight = 88;
-  const int block_y = bubble_y + std::max(0, (bubble_h - kBlockHeight) / 2);
-  M5.Display.setFont(&fonts::Font2);
-  printCentered("visit", block_y, false);
-  printCenteredTiny("BB0.AI", block_y + 30);
-  M5.Display.setFont(&fonts::Font2);
-  printCentered("in Google Chrome", block_y + 72, false);
-}
-
-void ScreenRenderer::render_element_setup_device_code_text(const char* device_code,
-                                                           int bubble_x,
-                                                           int bubble_y,
-                                                           int bubble_w,
-                                                           int bubble_h) {
-  const uint16_t border = dialogueBorderColor();
-  M5.Display.setTextColor(border, TFT_WHITE);
-  M5.Display.setTextWrap(false);
-
-  constexpr int kDeviceCodeFontScale = 2;
-  constexpr int kDeviceCodeFontSpacing = 1;
-  constexpr int kDeviceCodeLineGap = 12;
-  const int text_x = bubble_x + 9;
-  const int text_w = bubble_w - 18;
-  const int line_h = kTinyFontGlyphHeight * kDeviceCodeFontScale;
-  const int block_h = line_h * 3 + kDeviceCodeLineGap * 2;
-  const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
-
-  auto drawCenteredTiny = [&](const char* text, int y) {
-    const int text_width =
-        tinyFontTextWidth(text, kDeviceCodeFontScale, kDeviceCodeFontSpacing);
-    const int x = text_x + std::max(0, (text_w - text_width) / 2);
-    drawTinyFontText(text,
-                     x,
-                     y,
-                     kDeviceCodeFontScale,
-                     kDeviceCodeFontSpacing,
-                     border);
-  };
-
-  const String display_code = uppercaseAscii(device_code);
-
-  drawCenteredTiny("INPUT", block_y);
-  drawCenteredTiny(display_code.c_str(), block_y + line_h + kDeviceCodeLineGap);
-  drawCenteredTiny("IN BB0.AI", block_y + (line_h + kDeviceCodeLineGap) * 2);
-}
-
-void ScreenRenderer::render_element_recording_sending_text(
-    const std::string& user_text,
-    int bubble_x,
-    int bubble_y,
-    int bubble_w,
-    int bubble_h) {
+void ScreenRenderer::render_element_preview_text(const char* title,
+                                                 const std::string& body,
+                                                 int bubble_x,
+                                                 int bubble_y,
+                                                 int bubble_w,
+                                                 int bubble_h) {
   const uint16_t border = dialogueBorderColor();
   const int text_x = bubble_x + 10;
   const int title_y = bubble_y + 12;
@@ -693,46 +566,14 @@ void ScreenRenderer::render_element_recording_sending_text(
   M5.Display.setTextWrap(false);
   M5.Display.setTextColor(border, TFT_WHITE);
   M5.Display.setFont(&fonts::Font2);
-  printFittedLine("sending", text_x, title_y, text_w, true);
+  printFittedLine(title, text_x, title_y, text_w, true);
 
   M5.Display.setClipRect(text_x, text_y, text_w, text_h);
   M5.Display.setTextColor(border, TFT_WHITE);
   M5.Display.setFont(&fonts::efontCN_12);
-  renderWrappedChatText(user_text, text_x, text_y, text_w, 0);
+  renderWrappedChatText(body, text_x, text_y, text_w, 0);
   M5.Display.clearClipRect();
   M5.Display.setTextWrap(false);
-}
-
-void ScreenRenderer::render_element_recording_failed_text(const char* detail,
-                                                          int bubble_x,
-                                                          int bubble_y,
-                                                          int bubble_w,
-                                                          int bubble_h) {
-  const uint16_t border = dialogueBorderColor();
-  String detail_text(detail != nullptr ? detail : "");
-  String line1 = detail_text;
-  String line2;
-  const int separator = detail_text.indexOf(':');
-  if (separator >= 0) {
-    line1 = detail_text.substring(0, separator);
-    line2 = detail_text.substring(separator + 1);
-  }
-
-  const int text_x = bubble_x + 10;
-  const int text_w = bubble_w - 20;
-  const int block_h = line2.length() > 0 ? 70 : 50;
-  const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
-
-  M5.Display.setTextWrap(false);
-  M5.Display.setTextColor(border, TFT_WHITE);
-  M5.Display.setFont(&fonts::Font2);
-  printFittedLine("failed", text_x, block_y, text_w, true);
-
-  M5.Display.setFont(&fonts::Font0);
-  printFittedLine(line1.c_str(), text_x, block_y + 34, text_w);
-  if (line2.length() > 0) {
-    printFittedLine(line2.c_str(), text_x, block_y + 52, text_w);
-  }
 }
 
 void ScreenRenderer::render_element_chat_header(size_t index, size_t count) {
@@ -850,20 +691,13 @@ void ScreenRenderer::resetElementState() {
   local_.battery_visible = false;
 }
 
-void ScreenRenderer::render_screen_avatar_dialogue(state::RenderScreenKind kind,
-                                                   const char* line1,
-                                                   const char* line2,
-                                                   bool large_title,
-                                                   uint8_t avatar_scale) {
-  state::RenderScreenState next;
-  next.kind = kind;
-  next.value1 = hashText(line1);
-  next.value2 = hashText(line2);
-  next.value3 = large_title ? 1 : 0;
-  next.value4 = avatar_scale;
+bool ScreenRenderer::prepare_avatar_dialogue_screen(
+    const state::RenderScreenState& next,
+    uint8_t avatar_scale,
+    AvatarDialogueLayout* layout_out) {
   if (sameRenderState(next)) {
     render_element_battery_level();
-    return;
+    return false;
   }
   const state::RenderScreenState previous = currentRenderState();
   const bool reuse_shell = canReuseAvatarDialogueShell(previous, avatar_scale);
@@ -871,25 +705,102 @@ void ScreenRenderer::render_screen_avatar_dialogue(state::RenderScreenKind kind,
   if (!reuse_shell) {
     resetElementState();
   }
-  render_avatar_dialogue_body(line1, line2, large_title, avatar_scale, reuse_shell);
+  if (layout_out != nullptr) {
+    *layout_out = render_avatar_dialogue_shell(avatar_scale, reuse_shell);
+  }
+  return true;
 }
 
-void ScreenRenderer::render_avatar_dialogue_body(const char* line1,
-                                                 const char* line2,
-                                                 bool large_title,
-                                                 uint8_t avatar_scale,
-                                                 bool reuse_shell) {
-  const AvatarDialogueLayout layout =
-      render_avatar_dialogue_shell(avatar_scale, reuse_shell);
+void ScreenRenderer::render_avatar_layout_brand(state::RenderScreenKind kind,
+                                                const char* title) {
+  state::RenderScreenState next;
+  next.kind = kind;
+  next.value1 = hashText(title);
+  next.value2 = hashText("layout-brand-v1");
+  next.value4 = kZeroAvatarScale;
 
-  const int text_x = layout.bubble_x + (large_title ? 7 : 10);
-  const int text_width = layout.bubble_w - (large_title ? 14 : 20);
-  render_element_bubble_text(line1,
-                             line2,
-                             text_x,
-                             layout.bubble_y + 5,
-                             text_width,
-                             large_title);
+  AvatarDialogueLayout layout;
+  if (!prepare_avatar_dialogue_screen(next, kZeroAvatarScale, &layout)) {
+    return;
+  }
+  render_element_brand_text(title,
+                            layout.bubble_x,
+                            layout.bubble_y,
+                            layout.bubble_w,
+                            layout.bubble_h);
+  render_element_battery_level();
+}
+
+void ScreenRenderer::render_avatar_layout_instruction(state::RenderScreenKind kind,
+                                                      const char* line1,
+                                                      const char* emphasis,
+                                                      const char* line3,
+                                                      uint8_t emphasis_scale) {
+  state::RenderScreenState next;
+  next.kind = kind;
+  next.value1 = hashText(line1);
+  next.value2 = hashText(emphasis);
+  next.value3 = hashText(line3);
+  next.value4 = static_cast<uint32_t>(emphasis_scale);
+
+  AvatarDialogueLayout layout;
+  if (!prepare_avatar_dialogue_screen(next, kZeroAvatarScale, &layout)) {
+    return;
+  }
+  render_element_instruction_text(line1,
+                                  emphasis,
+                                  line3,
+                                  emphasis_scale,
+                                  layout.bubble_x,
+                                  layout.bubble_y,
+                                  layout.bubble_w,
+                                  layout.bubble_h);
+  render_element_battery_level();
+}
+
+void ScreenRenderer::render_avatar_layout_status(state::RenderScreenKind kind,
+                                                 const char* title,
+                                                 const char* detail) {
+  state::RenderScreenState next;
+  next.kind = kind;
+  next.value1 = hashText(title);
+  next.value2 = hashText(detail);
+  next.value3 = hashText("layout-status-v1");
+  next.value4 = kZeroAvatarScale;
+
+  AvatarDialogueLayout layout;
+  if (!prepare_avatar_dialogue_screen(next, kZeroAvatarScale, &layout)) {
+    return;
+  }
+  render_element_status_pair_text(title,
+                                  detail,
+                                  layout.bubble_x,
+                                  layout.bubble_y,
+                                  layout.bubble_w,
+                                  layout.bubble_h);
+  render_element_battery_level();
+}
+
+void ScreenRenderer::render_avatar_layout_preview(state::RenderScreenKind kind,
+                                                  const char* title,
+                                                  const std::string& body) {
+  state::RenderScreenState next;
+  next.kind = kind;
+  next.value1 = hashText(title);
+  next.value2 = hashString(body);
+  next.value3 = hashText("layout-preview-v1");
+  next.value4 = kZeroAvatarScale;
+
+  AvatarDialogueLayout layout;
+  if (!prepare_avatar_dialogue_screen(next, kZeroAvatarScale, &layout)) {
+    return;
+  }
+  render_element_preview_text(title,
+                              body,
+                              layout.bubble_x,
+                              layout.bubble_y,
+                              layout.bubble_w,
+                              layout.bubble_h);
   render_element_battery_level();
 }
 
@@ -905,6 +816,7 @@ bool ScreenRenderer::isAvatarDialogueScreenKind(state::RenderScreenKind kind) co
     case state::RenderScreenKind::RecordingSent:
     case state::RenderScreenKind::RecordingAborted:
     case state::RenderScreenKind::RecordingFailed:
+    case state::RenderScreenKind::CheckingMessages:
     case state::RenderScreenKind::SetupWifi:
     case state::RenderScreenKind::SetupDeviceCode:
     case state::RenderScreenKind::SetupStatus:

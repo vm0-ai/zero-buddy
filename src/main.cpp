@@ -129,9 +129,6 @@ uint8_t g_pcm_buffer[kPcmBufferBytes] = {0};
 bool g_btn_b_was_down = false;
 volatile bool g_btn_b_interrupt_pending = false;
 uint32_t g_last_btn_b_restart_ms = 0;
-esp_timer_handle_t g_runtime_check_timer = nullptr;
-volatile bool g_runtime_check_due = false;
-volatile bool g_runtime_check_timer_active = false;
 bool g_ble_wifi_received = false;
 String g_ble_wifi_ssid;
 String g_ble_wifi_password;
@@ -263,54 +260,8 @@ void pollControls() {
   restartIfBtnBPressed();
 }
 
-void runtimeCheckTimerCallback(void*) {
-  g_runtime_check_due = true;
-  g_runtime_check_timer_active = false;
-}
-
-bool ensureRuntimeCheckTimer() {
-  if (g_runtime_check_timer != nullptr) {
-    return true;
-  }
-  esp_timer_create_args_t args = {};
-  args.callback = &runtimeCheckTimerCallback;
-  args.name = "assistant-check";
-  return esp_timer_create(&args, &g_runtime_check_timer) == ESP_OK;
-}
-
-void stopRuntimeCheckTimer() {
-  if (g_runtime_check_timer != nullptr) {
-    esp_timer_stop(g_runtime_check_timer);
-  }
-  g_runtime_check_due = false;
-  g_runtime_check_timer_active = false;
-}
-
 void cancelCheckTimers() {
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
-  stopRuntimeCheckTimer();
-}
-
-void scheduleRuntimeCheckTimerIfNeeded(uint32_t delay_ms) {
-  if (g_runtime_check_due || g_runtime_check_timer_active) {
-    return;
-  }
-  if (!ensureRuntimeCheckTimer()) {
-    g_runtime_check_due = true;
-    return;
-  }
-  const uint32_t effective_delay =
-      delay_ms == 0 ? zero_buddy::state::kInitialCheckDelayMs : delay_ms;
-  if (esp_timer_start_once(g_runtime_check_timer,
-                           static_cast<uint64_t>(effective_delay) * 1000ULL) == ESP_OK) {
-    g_runtime_check_timer_active = true;
-  } else {
-    g_runtime_check_due = true;
-  }
-}
-
-bool runtimeCheckDue() {
-  return g_runtime_check_due;
 }
 
 void restartAwareDelay(uint32_t duration_ms) {
@@ -1722,7 +1673,6 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
 class HardwareDeepSleepOps : public DeepSleepOps {
  public:
   void configureRtcWake(uint32_t delay_ms) override {
-    stopRuntimeCheckTimer();
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(delay_ms) * 1000ULL);
   }
@@ -1827,9 +1777,6 @@ class HardwareReadOps : public ReadOps {
     while (millis() - start < timeout_ms) {
       pollControls();
       refreshBatteryLevelIfDue();
-      if (runtimeCheckDue()) {
-        return ReadInput::CheckDue;
-      }
       if (buttonADown()) {
         const uint32_t now = millis();
         if (down_since_ms == 0) {
@@ -2127,7 +2074,6 @@ class HardwareRecordingOps : public RecordingOps {
 void enterDeepSleep();
 enum class ReadRunResult {
   Completed,
-  CheckDue,
   RecordingCompleted,
 };
 
@@ -2139,10 +2085,11 @@ enum class CheckRunResult {
 
 CheckRunResult runCheckAssistantOnce();
 ReadRunResult runReadOnce();
+void returnToIdle();
 void runPluggedReadCheckLoop();
-void runReadThenSleep();
+void runReadThenIdle();
 void runRecordingOnce();
-void runRecordingThenSleep();
+void runRecordingThenIdle();
 
 void runRecordingOnce() {
   zero_buddy::state::setMode(&g_state, zero_buddy::state::Mode::Recording);
@@ -2154,6 +2101,12 @@ void runRecordingOnce() {
 
 void enterDeepSleep() {
   while (true) {
+    if (externalPowerConnected()) {
+      cancelCheckTimers();
+      runPluggedReadCheckLoop();
+      continue;
+    }
+
     zero_buddy::state::setMode(&g_state, zero_buddy::state::Mode::DeepSleep);
     HardwareDeepSleepOps ops;
     DeepSleepMode mode(&g_state, &ops);
@@ -2165,6 +2118,14 @@ void enterDeepSleep() {
     }
     return;
   }
+}
+
+void returnToIdle() {
+  if (externalPowerConnected()) {
+    cancelCheckTimers();
+    runPluggedReadCheckLoop();
+  }
+  enterDeepSleep();
 }
 
 CheckRunResult runCheckAssistantOnce() {
@@ -2183,16 +2144,16 @@ CheckRunResult runCheckAssistantOnce() {
   return CheckRunResult::Completed;
 }
 
-void runCheckAssistantThenSleep() {
+void runCheckAssistantThenIdle() {
   const CheckRunResult result = runCheckAssistantOnce();
   if (result == CheckRunResult::ReadRequested) {
-    runReadThenSleep();
+    runReadThenIdle();
     return;
   }
   if (result == CheckRunResult::RecordingRequested) {
     runRecordingOnce();
   }
-  enterDeepSleep();
+  returnToIdle();
 }
 
 ReadRunResult runReadOnce() {
@@ -2201,10 +2162,6 @@ ReadRunResult runReadOnce() {
   ReadMode mode(&g_state, &ops);
   const auto result = mode.main();
   if (result.status == ModeRunStatus::Aborted && mode.abortRequested()) {
-    const char* reason = mode.abortReason();
-    if (reason != nullptr && strcmp(reason, "check_due") == 0) {
-      return ReadRunResult::CheckDue;
-    }
     runRecordingOnce();
     return ReadRunResult::RecordingCompleted;
   } else {
@@ -2213,35 +2170,38 @@ ReadRunResult runReadOnce() {
   return ReadRunResult::Completed;
 }
 
-void runReadThenSleep() {
-  const ReadRunResult result = runReadOnce();
-  if (result != ReadRunResult::RecordingCompleted &&
-      (result == ReadRunResult::CheckDue || externalPowerConnected())) {
-    cancelCheckTimers();
-    const CheckRunResult check_result = runCheckAssistantOnce();
-    if (check_result == CheckRunResult::RecordingRequested) {
-      runRecordingOnce();
-    }
+void runPluggedCheckOnce() {
+  cancelCheckTimers();
+  g_screen.render_screen_checking_messages();
+  const CheckRunResult check_result = runCheckAssistantOnce();
+  if (check_result == CheckRunResult::RecordingRequested) {
+    runRecordingOnce();
   }
-  enterDeepSleep();
+}
+
+void runReadThenIdle() {
+  const ReadRunResult result = runReadOnce();
+  if (result != ReadRunResult::RecordingCompleted && externalPowerConnected()) {
+    runPluggedCheckOnce();
+  }
+  returnToIdle();
 }
 
 void runPluggedReadCheckLoop() {
   while (externalPowerConnected()) {
     const ReadRunResult read_result = runReadOnce();
+    if (!externalPowerConnected()) {
+      break;
+    }
     if (read_result != ReadRunResult::RecordingCompleted) {
-      cancelCheckTimers();
-      const CheckRunResult check_result = runCheckAssistantOnce();
-      if (check_result == CheckRunResult::RecordingRequested) {
-        runRecordingOnce();
-      }
+      runPluggedCheckOnce();
     }
   }
 }
 
-void runRecordingThenSleep() {
+void runRecordingThenIdle() {
   runRecordingOnce();
-  enterDeepSleep();
+  returnToIdle();
 }
 
 }  // namespace
@@ -2299,26 +2259,26 @@ void setup() {
   if (btn_a_wake) {
     g_screen.screenOn();
     if (waitForBtnALongPress(kLongPressMs)) {
-      runRecordingThenSleep();
+      runRecordingThenIdle();
       return;
     }
-    runReadThenSleep();
+    runReadThenIdle();
     return;
   }
 
   if (wake_cause == ESP_SLEEP_WAKEUP_TIMER) {
-    runCheckAssistantThenSleep();
+    runCheckAssistantThenIdle();
     return;
   }
 
   if (external_power_wake || (power_irq_wake && axp_vbus_insert)) {
     g_screen.screenOn();
-    runReadThenSleep();
+    runReadThenIdle();
     return;
   }
 
   runBootPreflight();
-  runReadThenSleep();
+  runReadThenIdle();
 }
 
 void loop() {}

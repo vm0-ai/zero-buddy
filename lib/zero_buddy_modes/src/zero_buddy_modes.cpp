@@ -130,18 +130,18 @@ ModeRunResult DeepSleepMode::main() {
     return abortedResult();
   }
 
-  const state::DeepSleepPlan plan = state::makeDeepSleepPlan(*state_);
-  ops_->configureRtcWake(plan.rtcDelayMs);
-  if (shouldStop()) {
-    return abortedResult();
-  }
-
   const bool charging = ops_->isCharging();
   if (shouldStop()) {
     return abortedResult();
   }
   if (charging) {
     return completed();
+  }
+
+  const state::DeepSleepPlan plan = state::makeDeepSleepPlan(*state_);
+  ops_->configureRtcWake(plan.rtcDelayMs);
+  if (shouldStop()) {
+    return abortedResult();
   }
 
   ops_->configureBtnAWake();
@@ -256,10 +256,6 @@ ModeRunResult ReadMode::main() {
       abort("btn_a_long_press");
       return abortedResult();
     }
-    if (input == ReadInput::CheckDue) {
-      abort("check_due");
-      return abortedResult();
-    }
     if (input == ReadInput::Timeout) {
       return shouldStop() ? abortedResult() : completed();
     }
@@ -328,10 +324,6 @@ ModeRunResult ReadMode::renderEmptyUntilIdle() {
     const ReadInput input = ops_->waitForInput(kReadIdleTimeoutMs);
     if (input == ReadInput::LongPress) {
       abort("btn_a_long_press");
-      return abortedResult();
-    }
-    if (input == ReadInput::CheckDue) {
-      abort("check_due");
       return abortedResult();
     }
     if (input == ReadInput::Timeout) {

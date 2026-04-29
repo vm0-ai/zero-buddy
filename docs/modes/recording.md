@@ -10,9 +10,9 @@ This mode turns the screen on and owns the recording status/result rendering. It
 
 - Turning the screen on for the recording session.
 - Rendering the Zero dot-matrix avatar and dialogue bubble on recording status screens.
-- Rendering the final recording result and keeping it visible for 5 seconds before the state machine enters `DeepSleep`.
+- Rendering the final recording result and keeping it visible for 5 seconds before the state machine chooses the next idle state.
 - Selecting a CPU frequency that can reliably support audio capture.
-- Canceling pending assistant-check timer state, including both RTC wake and the runtime timer used while charging.
+- Canceling pending assistant-check RTC wake state.
 - Clearing stored assistant messages through `clear_assistant_message` before starting a new user turn.
 - Capturing microphone audio into LittleFS.
 - Connecting Wi-Fi if needed.
@@ -44,7 +44,6 @@ It does not own:
 
 3. Clear pending assistant-check timer state.
    - Cancel any pending RTC timer configured for `CheckAssistantMessage`.
-   - Cancel any runtime assistant-check timer configured while the device was charging.
    - Clear mode-owned RTC wake metadata that would otherwise cause a stale check after this user turn starts.
    - Do not clear `lastMessageId` at this step; it remains the current message cursor until a new user message is successfully sent.
 

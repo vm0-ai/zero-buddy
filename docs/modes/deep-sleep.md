@@ -1,16 +1,15 @@
 # DeepSleep Mode
 
-`DeepSleep` is the low-power resting mode. Its job is to configure the next assistant-check wake, route charging devices into `Read`, and otherwise prepare the device for ESP32 deep sleep.
+`DeepSleep` is the low-power resting mode. Its job is to configure the next assistant-check wake and prepare the device for ESP32 deep sleep.
 
-This mode owns only the screen-off power action, not display rendering or screen-on behavior. If the RTC wakes the device, the state machine enters `CheckAssistantMessage`. If BtnA wakes the device, the boot path measures the press: a short press enters `Read`, and a long press enters `Recording`. If charging is detected immediately after RTC scheduling, the runtime also starts a foreground assistant-check timer and enters `Read` instead of hibernating.
+This mode owns only the screen-off power action, not display rendering or screen-on behavior. If the RTC wakes the device, the state machine enters `CheckAssistantMessage`. If BtnA wakes the device, the boot path measures the press: a short press enters `Read`, and a long press enters `Recording`. Plugged foreground behavior is handled before entering `DeepSleep`, so charging devices return to `Read` without scheduling RTC wake.
 
 ## Owned Work
 
 `DeepSleep` owns:
 
 - Scheduling the RTC timer using `GlobalState.checkDelayMs`.
-- Checking whether the device is charging after RTC scheduling.
-- Starting the runtime assistant-check timer when charging keeps the CPU awake.
+- Checking whether the device is charging before RTC scheduling.
 - Turning the screen off.
 - Disconnecting Wi-Fi before sleep.
 - Entering ESP32 deep sleep.
@@ -31,15 +30,14 @@ It does not own:
 
 `main(context)` is the entry process for this mode.
 
-1. Configure the RTC wake timer.
-   - Use `GlobalState.checkDelayMs` as the current delay.
-   - This timer is the next scheduled `CheckAssistantMessage` wake.
-
-2. Check charging state.
-   - If charging is active, return to the state machine without entering CPU hibernation.
-   - The runtime starts a software assistant-check timer using the same `GlobalState.checkDelayMs`.
+1. Check charging state.
+   - If charging is active, return to the state machine without configuring RTC wake or entering CPU hibernation.
    - The state machine enters `Read`.
    - Do not turn the screen off or disconnect Wi-Fi on this path; `Read` owns its own screen setup.
+
+2. Configure the RTC wake timer.
+   - Use `GlobalState.checkDelayMs` as the current delay.
+   - This timer is the next scheduled `CheckAssistantMessage` wake.
 
 3. Configure BtnA as a wake source.
    - BtnA must be able to wake the device from ESP32 deep sleep.
@@ -75,7 +73,6 @@ For a BtnA wake that is released before the long-press threshold, the restarted 
 `abort(reason)` must:
 
 - Cancel the pending RTC timer wake configured by this mode.
-- Cancel the runtime assistant-check timer if it was scheduled while charging.
 - Avoid entering ESP32 deep sleep after abort has been requested.
 - Leave the mode in a state where another mode can be entered immediately.
 - Be idempotent: repeated calls must be safe.

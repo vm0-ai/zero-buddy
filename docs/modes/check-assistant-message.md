@@ -1,6 +1,6 @@
 # CheckAssistantMessage Mode
 
-`CheckAssistantMessage` is a short-lived mode entered after an RTC wake. Its job is to check whether the assistant has produced new messages, persist any results, update the global message cursor and check backoff, then return control to the state machine.
+`CheckAssistantMessage` is a short-lived mode entered after an RTC wake while unplugged, or after a `Read` idle/read-complete event while plugged. Its job is to check whether the assistant has produced new messages, persist any results, update the global message cursor and check backoff, then return control to the state machine.
 
 This mode does not own display rendering or direct LED operations. It also does not decide the next mode directly. After `main` finishes or `abort` completes, the state machine performs the next transition.
 
@@ -132,7 +132,7 @@ The policy is exponential backoff capped at 1 hour:
 nextDelay = min(currentDelay * 2, 60 * 60 * 1000);
 ```
 
-The initial delay and exact sequence are implementation details, but the state machine should only need the final `checkDelayMs` value when scheduling the next RTC wake.
+The initial delay and exact sequence are implementation details. When unplugged, the state machine uses the final `checkDelayMs` value to schedule the next RTC wake. When plugged, the device stays awake and does not schedule RTC wake.
 
 When new assistant messages are found:
 

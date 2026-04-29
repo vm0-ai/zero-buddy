@@ -32,6 +32,7 @@ enum class RenderScreenKind : uint8_t {
   RecordingSent,
   RecordingAborted,
   RecordingFailed,
+  CheckingMessages,
   SetupWifi,
   SetupDeviceCode,
   SetupStatus,

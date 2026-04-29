@@ -108,7 +108,6 @@ enum class ReadInput {
   Timeout,
   ShortPress,
   LongPress,
-  CheckDue,
 };
 
 struct ReadProgress {

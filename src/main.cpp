@@ -68,6 +68,7 @@ using zero_buddy::screen::ScreenRenderer;
 constexpr uint32_t kRtcMagic = 0x5A0B2028UL;
 constexpr gpio_num_t kBtnAWakePin = GPIO_NUM_37;
 constexpr gpio_num_t kBtnBPin = GPIO_NUM_39;
+constexpr gpio_num_t kPowerIrqWakePin = GPIO_NUM_35;
 constexpr gpio_num_t kLedGpio = GPIO_NUM_10;
 constexpr int kLedPin = static_cast<int>(kLedGpio);
 constexpr int kBuzzerPin = 2;
@@ -114,6 +115,13 @@ constexpr uint8_t kBleFlagWifiConfigured = 1U << 0;
 constexpr uint8_t kBleFlagAuthConfigured = 1U << 1;
 constexpr uint8_t kBleFlagThreadConfigured = 1U << 2;
 constexpr uint8_t kBleFlagError = 1U << 7;
+constexpr uint8_t kAxp192IrqEnable1Reg = 0x40;
+constexpr uint8_t kAxp192IrqStatus1Reg = 0x44;
+constexpr uint8_t kAxp192IrqStatus2Reg = 0x45;
+constexpr uint8_t kAxp192IrqStatus3Reg = 0x46;
+constexpr uint8_t kAxp192IrqStatus4Reg = 0x47;
+constexpr uint8_t kAxp192IrqStatus5Reg = 0x4D;
+constexpr uint8_t kAxp192VbusInsertIrqBit = 1U << 3;
 
 RTC_DATA_ATTR uint32_t g_rtc_magic = 0;
 RTC_DATA_ATTR GlobalState g_state;
@@ -158,6 +166,10 @@ void ensureGlobalStateInitialized() {
 
 void setCpu(uint8_t mhz) {
   setCpuFrequencyMhz(mhz);
+}
+
+constexpr uint64_t gpioWakeMask(gpio_num_t pin) {
+  return 1ULL << static_cast<uint8_t>(pin);
 }
 
 void setStatusLed(bool on) {
@@ -328,6 +340,24 @@ bool externalPowerConnected() {
   Serial.print(" charging=");
   Serial.println(static_cast<int>(charge_state));
   return connected;
+}
+
+void clearAxp192IrqStatuses() {
+  M5.Power.Axp192.writeRegister8(kAxp192IrqStatus1Reg, 0xFF);
+  M5.Power.Axp192.writeRegister8(kAxp192IrqStatus2Reg, 0xFF);
+  M5.Power.Axp192.writeRegister8(kAxp192IrqStatus3Reg, 0xFF);
+  M5.Power.Axp192.writeRegister8(kAxp192IrqStatus4Reg, 0xFF);
+  M5.Power.Axp192.writeRegister8(kAxp192IrqStatus5Reg, 0xFF);
+}
+
+void enableExternalPowerWakeIrq() {
+  clearAxp192IrqStatuses();
+  M5.Power.Axp192.bitOn(kAxp192IrqEnable1Reg, kAxp192VbusInsertIrqBit);
+}
+
+bool axp192VbusInsertIrqActive() {
+  return (M5.Power.Axp192.readRegister8(kAxp192IrqStatus1Reg) &
+          kAxp192VbusInsertIrqBit) != 0;
 }
 
 const char* modeRunErrorName(ModeRunError error) {
@@ -1686,7 +1716,9 @@ class HardwareDeepSleepOps : public DeepSleepOps {
   }
 
   void configureBtnAWake() override {
-    esp_sleep_enable_ext0_wakeup(kBtnAWakePin, 0);
+    enableExternalPowerWakeIrq();
+    esp_sleep_enable_ext0_wakeup(kPowerIrqWakePin, 0);
+    esp_sleep_enable_ext1_wakeup(gpioWakeMask(kBtnAWakePin), ESP_EXT1_WAKEUP_ALL_LOW);
   }
 
   void screenOff() override {
@@ -2084,6 +2116,7 @@ void enterDeepSleep();
 enum class ReadRunResult {
   Completed,
   CheckDue,
+  RecordingCompleted,
 };
 
 enum class CheckRunResult {
@@ -2094,6 +2127,7 @@ enum class CheckRunResult {
 
 CheckRunResult runCheckAssistantOnce();
 ReadRunResult runReadOnce();
+void runPluggedReadCheckLoop();
 void runReadThenSleep();
 void runRecordingOnce();
 void runRecordingThenSleep();
@@ -2113,26 +2147,8 @@ void enterDeepSleep() {
     DeepSleepMode mode(&g_state, &ops);
     const auto result = mode.main();
     if (result.status == ModeRunStatus::Completed && ops.chargingDetected()) {
-      scheduleRuntimeCheckTimerIfNeeded(g_state.checkDelayMs);
-      if (runtimeCheckDue()) {
-        cancelCheckTimers();
-        const CheckRunResult check_result = runCheckAssistantOnce();
-        if (check_result == CheckRunResult::ReadRequested) {
-          runReadOnce();
-        } else if (check_result == CheckRunResult::RecordingRequested) {
-          runRecordingOnce();
-        }
-        continue;
-      }
-      if (runReadOnce() == ReadRunResult::CheckDue) {
-        cancelCheckTimers();
-        const CheckRunResult check_result = runCheckAssistantOnce();
-        if (check_result == CheckRunResult::ReadRequested) {
-          runReadOnce();
-        } else if (check_result == CheckRunResult::RecordingRequested) {
-          runRecordingOnce();
-        }
-      }
+      cancelCheckTimers();
+      runPluggedReadCheckLoop();
       continue;
     }
     return;
@@ -2178,6 +2194,7 @@ ReadRunResult runReadOnce() {
       return ReadRunResult::CheckDue;
     }
     runRecordingOnce();
+    return ReadRunResult::RecordingCompleted;
   } else {
     mode.abort("read_exit");
   }
@@ -2185,8 +2202,29 @@ ReadRunResult runReadOnce() {
 }
 
 void runReadThenSleep() {
-  runReadOnce();
+  const ReadRunResult result = runReadOnce();
+  if (result != ReadRunResult::RecordingCompleted &&
+      (result == ReadRunResult::CheckDue || externalPowerConnected())) {
+    cancelCheckTimers();
+    const CheckRunResult check_result = runCheckAssistantOnce();
+    if (check_result == CheckRunResult::RecordingRequested) {
+      runRecordingOnce();
+    }
+  }
   enterDeepSleep();
+}
+
+void runPluggedReadCheckLoop() {
+  while (externalPowerConnected()) {
+    const ReadRunResult read_result = runReadOnce();
+    if (read_result != ReadRunResult::RecordingCompleted) {
+      cancelCheckTimers();
+      const CheckRunResult check_result = runCheckAssistantOnce();
+      if (check_result == CheckRunResult::RecordingRequested) {
+        runRecordingOnce();
+      }
+    }
+  }
 }
 
 void runRecordingThenSleep() {
@@ -2204,6 +2242,7 @@ void setup() {
 
   pinMode(static_cast<int>(kBtnAWakePin), INPUT);
   pinMode(static_cast<int>(kBtnBPin), INPUT);
+  pinMode(static_cast<int>(kPowerIrqWakePin), INPUT);
   g_btn_b_was_down = buttonBDown();
   ledcSetup(0, 2000, 8);
   ledcAttachPin(kBuzzerPin, 0);
@@ -2219,17 +2258,29 @@ void setup() {
   zero_buddy::state::setHasAssistantMessage(&g_state, assistant_message_exists());
 
   const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
+  const uint64_t ext1_wake_mask =
+      wake_cause == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;
+  const bool btn_a_wake =
+      (wake_cause == ESP_SLEEP_WAKEUP_EXT1 &&
+       (ext1_wake_mask & gpioWakeMask(kBtnAWakePin)) != 0) ||
+      buttonADown();
+  const bool power_irq_wake = wake_cause == ESP_SLEEP_WAKEUP_EXT0;
+  const bool axp_vbus_insert = power_irq_wake && axp192VbusInsertIrqActive();
   const bool external_power_wake =
-      wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED && had_rtc_state &&
-      previous_mode == zero_buddy::state::Mode::DeepSleep &&
-      externalPowerConnected();
+      (power_irq_wake && externalPowerConnected()) ||
+      (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED && had_rtc_state &&
+       previous_mode == zero_buddy::state::Mode::DeepSleep &&
+       externalPowerConnected());
+  if (power_irq_wake) {
+    clearAxp192IrqStatuses();
+  }
 
   if (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED && !external_power_wake) {
     g_screen.render_screen_boot();
     restartAwareDelay(kBootSplashMs);
   }
 
-  if (wake_cause == ESP_SLEEP_WAKEUP_EXT0 || buttonADown()) {
+  if (btn_a_wake) {
     g_screen.screenOn();
     if (waitForBtnALongPress(kLongPressMs)) {
       runRecordingThenSleep();
@@ -2244,7 +2295,7 @@ void setup() {
     return;
   }
 
-  if (external_power_wake) {
+  if (external_power_wake || (power_irq_wake && axp_vbus_insert)) {
     g_screen.screenOn();
     runReadThenSleep();
     return;

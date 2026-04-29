@@ -104,39 +104,6 @@ void setHasAssistantMessage(GlobalState* state, bool hasAssistantMessage) {
   state->hasAssistantMessage = hasAssistantMessage;
 }
 
-bool sameRenderScreenState(const RenderScreenState& lhs, const RenderScreenState& rhs) {
-  return lhs.kind == rhs.kind &&
-         lhs.value1 == rhs.value1 &&
-         lhs.value2 == rhs.value2 &&
-         lhs.value3 == rhs.value3 &&
-         lhs.value4 == rhs.value4;
-}
-
-bool shouldRenderScreen(GlobalState* state, const RenderScreenState& next) {
-  if (!hasState(state)) {
-    return true;
-  }
-  if (sameRenderScreenState(state->lastRenderScreenState, next)) {
-    return false;
-  }
-  state->lastRenderScreenState = next;
-  return true;
-}
-
-void setLastRenderScreenState(GlobalState* state, const RenderScreenState& next) {
-  if (!hasState(state)) {
-    return;
-  }
-  state->lastRenderScreenState = next;
-}
-
-void clearLastRenderScreenState(GlobalState* state) {
-  if (!hasState(state)) {
-    return;
-  }
-  state->lastRenderScreenState = RenderScreenState();
-}
-
 bool commitRecordingMessageSent(GlobalState* state, const std::string& userMessageId) {
   if (!hasState(state) || userMessageId.empty() || !messageIdFits(userMessageId)) {
     return false;

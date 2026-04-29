@@ -83,11 +83,6 @@ void advanceCheckDelay(GlobalState* state,
 bool hasAssistantMessage(const GlobalState& state);
 void setHasAssistantMessage(GlobalState* state, bool hasAssistantMessage);
 
-bool sameRenderScreenState(const RenderScreenState& lhs, const RenderScreenState& rhs);
-bool shouldRenderScreen(GlobalState* state, const RenderScreenState& next);
-void setLastRenderScreenState(GlobalState* state, const RenderScreenState& next);
-void clearLastRenderScreenState(GlobalState* state);
-
 bool commitRecordingMessageSent(GlobalState* state, const std::string& userMessageId);
 void abortRecording(GlobalState* state);
 

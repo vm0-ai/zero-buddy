@@ -110,8 +110,10 @@ struct GlobalState {
   - It is maintained by `append_assistant_message` and `clear_assistant_message`, not directly by mode logic.
 
 - `lastRenderScreenState`
-  - Tracks the last full-screen render key so mode transitions can avoid drawing the same screen again.
-  - Cleared when the screen is turned off.
+  - Tracks the last full-screen render key so `ScreenRenderer` can avoid drawing the same screen again.
+  - Used only by `ScreenRenderer`; mode `main` / `abort` implementations must not read it or branch on it.
+  - Boot and business state restoration must not use it to decide state validity.
+  - Cleared by `ScreenRenderer` when the screen is turned off.
   - Local overlays, such as the top-right battery icon, are not part of this key.
   - Zero avatar dialogue screens share a stable shell: background, avatar,
     bubble frame, and bubble tail.

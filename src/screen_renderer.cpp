@@ -35,6 +35,15 @@ struct TinyFontGlyph {
   uint8_t columns[kTinyFontGlyphWidth];
 };
 
+bool sameRenderScreenState(const state::RenderScreenState& lhs,
+                           const state::RenderScreenState& rhs) {
+  return lhs.kind == rhs.kind &&
+         lhs.value1 == rhs.value1 &&
+         lhs.value2 == rhs.value2 &&
+         lhs.value3 == rhs.value3 &&
+         lhs.value4 == rhs.value4;
+}
+
 constexpr TinyFontGlyph kTinyFont[] = {
     {'0', {0x3E, 0x49, 0x49, 0x49, 0x3E}},
     {'1', {0x00, 0x42, 0x7F, 0x40, 0x00}},
@@ -258,7 +267,7 @@ void ScreenRenderer::render_screen_read_message(size_t index,
   next.value4 = hashString(message);
 
   const state::RenderScreenState previous = currentRenderState();
-  if (state::sameRenderScreenState(previous, next)) {
+  if (sameRenderScreenState(previous, next)) {
     render_element_battery_level();
     return;
   }
@@ -317,7 +326,7 @@ void ScreenRenderer::render_screen_recording_sending(const std::string& user_tex
   next.value4 = kZeroAvatarScale;
 
   const state::RenderScreenState previous = currentRenderState();
-  if (state::sameRenderScreenState(previous, next)) {
+  if (sameRenderScreenState(previous, next)) {
     render_element_battery_level();
     return;
   }
@@ -357,7 +366,7 @@ void ScreenRenderer::render_screen_recording_failed(const char* detail) {
   next.value4 = kZeroAvatarScale;
 
   const state::RenderScreenState previous = currentRenderState();
-  if (state::sameRenderScreenState(previous, next)) {
+  if (sameRenderScreenState(previous, next)) {
     render_element_battery_level();
     return;
   }
@@ -413,7 +422,7 @@ void ScreenRenderer::render_screen_setup_device_code(const char* device_code) {
   next.value4 = kZeroAvatarScale;
 
   const state::RenderScreenState previous = currentRenderState();
-  if (state::sameRenderScreenState(previous, next)) {
+  if (sameRenderScreenState(previous, next)) {
     render_element_battery_level();
     return;
   }
@@ -817,7 +826,7 @@ state::RenderScreenState ScreenRenderer::currentRenderState() const {
 
 void ScreenRenderer::commitRenderState(const state::RenderScreenState& next) {
   if (shared_state_ != nullptr) {
-    state::setLastRenderScreenState(shared_state_, next);
+    shared_state_->lastRenderScreenState = next;
   } else {
     fallback_render_state_ = next;
   }
@@ -825,7 +834,7 @@ void ScreenRenderer::commitRenderState(const state::RenderScreenState& next) {
 
 void ScreenRenderer::clearRenderState() {
   if (shared_state_ != nullptr) {
-    state::clearLastRenderScreenState(shared_state_);
+    shared_state_->lastRenderScreenState = state::RenderScreenState();
   } else {
     fallback_render_state_ = state::RenderScreenState();
   }
@@ -833,7 +842,7 @@ void ScreenRenderer::clearRenderState() {
 }
 
 bool ScreenRenderer::sameRenderState(const state::RenderScreenState& next) const {
-  return state::sameRenderScreenState(currentRenderState(), next);
+  return sameRenderScreenState(currentRenderState(), next);
 }
 
 void ScreenRenderer::resetElementState() {

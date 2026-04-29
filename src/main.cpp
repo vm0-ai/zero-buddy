@@ -62,7 +62,6 @@ using zero_buddy::modes::RecordingMode;
 using zero_buddy::modes::RecordingOps;
 using zero_buddy::state::AssistantCheckResult;
 using zero_buddy::state::GlobalState;
-using zero_buddy::state::RenderScreenKind;
 using zero_buddy::screen::ScreenRenderer;
 
 constexpr uint32_t kRtcMagic = 0x5A0B2028UL;
@@ -154,8 +153,7 @@ bool stateLooksValid(const GlobalState& state) {
   if (mode > static_cast<uint8_t>(zero_buddy::state::Mode::Recording)) {
     return false;
   }
-  const auto render_kind = static_cast<uint8_t>(state.lastRenderScreenState.kind);
-  return render_kind <= static_cast<uint8_t>(RenderScreenKind::SetupStatus);
+  return true;
 }
 
 void ensureGlobalStateInitialized() {

@@ -129,6 +129,8 @@ RTC_DATA_ATTR GlobalState g_state;
 ScreenRenderer g_screen(&g_state);
 uint8_t g_pcm_buffer[kPcmBufferBytes] = {0};
 bool g_btn_b_was_down = false;
+volatile bool g_btn_b_interrupt_pending = false;
+uint32_t g_last_btn_b_restart_ms = 0;
 esp_timer_handle_t g_runtime_check_timer = nullptr;
 volatile bool g_runtime_check_due = false;
 volatile bool g_runtime_check_timer_active = false;
@@ -226,9 +228,24 @@ bool buttonBDown() {
   return digitalRead(static_cast<int>(kBtnBPin)) == LOW;
 }
 
+void IRAM_ATTR handleBtnBFallingInterrupt() {
+  g_btn_b_interrupt_pending = true;
+}
+
 void restartIfBtnBPressed() {
   const bool down = buttonBDown();
-  if (down && !g_btn_b_was_down) {
+  const bool interrupt_pending = g_btn_b_interrupt_pending;
+  if (interrupt_pending) {
+    g_btn_b_interrupt_pending = false;
+  }
+  const bool pressed = interrupt_pending || (down && !g_btn_b_was_down);
+  g_btn_b_was_down = down;
+  if (pressed) {
+    const uint32_t now = millis();
+    if (now - g_last_btn_b_restart_ms < 250) {
+      return;
+    }
+    g_last_btn_b_restart_ms = now;
     if (buttonADown()) {
       Serial.println("BtnA+BtnB clear runtime config");
       clearRuntimeConfig();
@@ -242,7 +259,6 @@ void restartIfBtnBPressed() {
     delay(20);
     esp_restart();
   }
-  g_btn_b_was_down = down;
 }
 
 void pollControls() {
@@ -926,7 +942,7 @@ bool httpPostJsonAnyStatus(const String& url,
   client.setInsecure();
   HTTPClient http;
   configureZeroHttpClient(&http);
-  http.setTimeout(20000);
+  http.setTimeout(5000);
   if (!http.begin(client, url)) {
     return false;
   }
@@ -2244,6 +2260,10 @@ void setup() {
   pinMode(static_cast<int>(kBtnBPin), INPUT);
   pinMode(static_cast<int>(kPowerIrqWakePin), INPUT);
   g_btn_b_was_down = buttonBDown();
+  g_btn_b_interrupt_pending = false;
+  attachInterrupt(digitalPinToInterrupt(static_cast<int>(kBtnBPin)),
+                  handleBtnBFallingInterrupt,
+                  FALLING);
   ledcSetup(0, 2000, 8);
   ledcAttachPin(kBuzzerPin, 0);
   ledcWriteTone(0, 0);

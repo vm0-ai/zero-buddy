@@ -67,7 +67,6 @@ class ScreenRenderer {
                                       int bubble_w,
                                       int bubble_h);
   void render_element_setup_device_code_text(const char* device_code,
-                                             uint32_t seconds_left,
                                              int bubble_x,
                                              int bubble_y,
                                              int bubble_w,

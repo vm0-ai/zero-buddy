@@ -46,33 +46,34 @@ constexpr TinyFontGlyph kTinyFont[] = {
     {'7', {0x01, 0x71, 0x09, 0x05, 0x03}},
     {'8', {0x36, 0x49, 0x49, 0x49, 0x36}},
     {'9', {0x26, 0x49, 0x49, 0x49, 0x3E}},
+    {'-', {0x08, 0x08, 0x08, 0x08, 0x08}},
     {'.', {0x00, 0x60, 0x60, 0x00, 0x00}},
-    {'a', {0x20, 0x54, 0x54, 0x54, 0x78}},
-    {'b', {0x7F, 0x48, 0x44, 0x44, 0x38}},
-    {'c', {0x38, 0x44, 0x44, 0x44, 0x28}},
-    {'d', {0x38, 0x44, 0x44, 0x48, 0x7F}},
-    {'e', {0x38, 0x54, 0x54, 0x54, 0x18}},
-    {'f', {0x08, 0x7E, 0x09, 0x01, 0x02}},
-    {'g', {0x18, 0x54, 0x54, 0x54, 0x3C}},
-    {'h', {0x7F, 0x08, 0x04, 0x04, 0x78}},
-    {'i', {0x00, 0x44, 0x7D, 0x40, 0x00}},
-    {'j', {0x20, 0x40, 0x44, 0x3D, 0x00}},
-    {'k', {0x7F, 0x10, 0x28, 0x44, 0x00}},
-    {'l', {0x00, 0x41, 0x7F, 0x40, 0x00}},
-    {'m', {0x7C, 0x04, 0x78, 0x04, 0x78}},
-    {'n', {0x7C, 0x08, 0x04, 0x04, 0x78}},
-    {'o', {0x38, 0x44, 0x44, 0x44, 0x38}},
-    {'p', {0x7C, 0x24, 0x24, 0x24, 0x18}},
-    {'q', {0x18, 0x24, 0x24, 0x28, 0x7C}},
-    {'r', {0x7C, 0x08, 0x04, 0x04, 0x08}},
-    {'s', {0x48, 0x54, 0x54, 0x54, 0x24}},
-    {'t', {0x04, 0x3F, 0x44, 0x40, 0x20}},
-    {'u', {0x3C, 0x40, 0x40, 0x20, 0x7C}},
-    {'v', {0x1C, 0x20, 0x40, 0x20, 0x1C}},
-    {'w', {0x3C, 0x40, 0x30, 0x40, 0x3C}},
-    {'x', {0x44, 0x28, 0x10, 0x28, 0x44}},
-    {'y', {0x0C, 0x50, 0x50, 0x50, 0x3C}},
-    {'z', {0x44, 0x64, 0x54, 0x4C, 0x44}},
+    {'A', {0x7E, 0x09, 0x09, 0x09, 0x7E}},
+    {'B', {0x7F, 0x49, 0x49, 0x49, 0x36}},
+    {'C', {0x3E, 0x41, 0x41, 0x41, 0x22}},
+    {'D', {0x7F, 0x41, 0x41, 0x22, 0x1C}},
+    {'E', {0x7F, 0x49, 0x49, 0x49, 0x41}},
+    {'F', {0x7F, 0x09, 0x09, 0x09, 0x01}},
+    {'G', {0x3E, 0x41, 0x49, 0x49, 0x7A}},
+    {'H', {0x7F, 0x08, 0x08, 0x08, 0x7F}},
+    {'I', {0x00, 0x41, 0x7F, 0x41, 0x00}},
+    {'J', {0x20, 0x40, 0x41, 0x3F, 0x01}},
+    {'K', {0x7F, 0x08, 0x14, 0x22, 0x41}},
+    {'L', {0x7F, 0x40, 0x40, 0x40, 0x40}},
+    {'M', {0x7F, 0x02, 0x0C, 0x02, 0x7F}},
+    {'N', {0x7F, 0x04, 0x08, 0x10, 0x7F}},
+    {'O', {0x3E, 0x41, 0x41, 0x41, 0x3E}},
+    {'P', {0x7F, 0x09, 0x09, 0x09, 0x06}},
+    {'Q', {0x3E, 0x41, 0x51, 0x21, 0x5E}},
+    {'R', {0x7F, 0x09, 0x19, 0x29, 0x46}},
+    {'S', {0x46, 0x49, 0x49, 0x49, 0x31}},
+    {'T', {0x01, 0x01, 0x7F, 0x01, 0x01}},
+    {'U', {0x3F, 0x40, 0x40, 0x40, 0x3F}},
+    {'V', {0x1F, 0x20, 0x40, 0x20, 0x1F}},
+    {'W', {0x3F, 0x40, 0x38, 0x40, 0x3F}},
+    {'X', {0x63, 0x14, 0x08, 0x14, 0x63}},
+    {'Y', {0x07, 0x08, 0x70, 0x08, 0x07}},
+    {'Z', {0x61, 0x51, 0x49, 0x45, 0x43}},
 };
 
 constexpr char kZeroAvatar[kZeroAvatarHeight][kZeroAvatarWidth + 1] = {
@@ -149,8 +150,8 @@ void printFittedLine(const char* text, int x, int y, int max_width, bool bold = 
 }
 
 const uint8_t* tinyFontGlyphFor(char ch) {
-  if (ch >= 'A' && ch <= 'Z') {
-    ch = static_cast<char>(ch - 'A' + 'a');
+  if (ch >= 'a' && ch <= 'z') {
+    ch = static_cast<char>(ch - 'a' + 'A');
   }
   for (const auto& glyph : kTinyFont) {
     if (glyph.ch == ch) {
@@ -172,6 +173,16 @@ int tinyFontTextWidth(const char* text, int scale, int spacing) {
     }
   }
   return width;
+}
+
+String uppercaseAscii(const char* text) {
+  String out(text != nullptr ? text : "");
+  for (size_t i = 0; i < out.length(); ++i) {
+    if (out[i] >= 'a' && out[i] <= 'z') {
+      out.setCharAt(i, static_cast<char>(out[i] - 'a' + 'A'));
+    }
+  }
+  return out;
 }
 
 void drawTinyFontText(const char* text,
@@ -372,7 +383,7 @@ void ScreenRenderer::render_screen_setup_wifi(const char* device_name, const cha
   state::RenderScreenState next;
   next.kind = state::RenderScreenKind::SetupWifi;
   next.value1 = hashText("visit");
-  next.value2 = hashText("bb0.ai");
+  next.value2 = hashText("BB0.AI");
   next.value3 = hashText("in Google Chrome");
   next.value4 = kZeroAvatarScale;
   const state::RenderScreenState previous = currentRenderState();
@@ -397,10 +408,12 @@ void ScreenRenderer::render_screen_setup_wifi(const char* device_name, const cha
 
 void ScreenRenderer::render_screen_setup_device_code(const char* device_code,
                                                      uint32_t seconds_left) {
+  (void)seconds_left;
+  const String display_code = uppercaseAscii(device_code);
   state::RenderScreenState next;
   next.kind = state::RenderScreenKind::SetupDeviceCode;
-  next.value1 = hashText(device_code);
-  next.value2 = seconds_left;
+  next.value1 = hashText(display_code.c_str());
+  next.value2 = hashText("device-code-uppercase-v2");
   next.value4 = kZeroAvatarScale;
 
   const state::RenderScreenState previous = currentRenderState();
@@ -409,32 +422,16 @@ void ScreenRenderer::render_screen_setup_device_code(const char* device_code,
     return;
   }
 
-  const bool countdown_only =
-      previous.kind == state::RenderScreenKind::SetupDeviceCode &&
-      previous.value1 == next.value1 &&
-      previous.value4 == next.value4;
   const bool reuse_shell = canReuseAvatarDialogueShell(previous, kZeroAvatarScale);
   commitRenderState(next);
 
   screenOn();
-  const AvatarDialogueLayout layout = avatarDialogueLayout(kZeroAvatarScale);
-  if (countdown_only) {
-    render_element_setup_device_code_countdown(seconds_left,
-                                               layout.bubble_x,
-                                               layout.bubble_y,
-                                               layout.bubble_w,
-                                               layout.bubble_h);
-    render_element_battery_level();
-    return;
-  }
-
   if (!reuse_shell) {
     resetElementState();
   }
   const AvatarDialogueLayout drawn_layout =
       render_avatar_dialogue_shell(kZeroAvatarScale, reuse_shell);
-  render_element_setup_device_code_text(device_code,
-                                        seconds_left,
+  render_element_setup_device_code_text(display_code.c_str(),
                                         drawn_layout.bubble_x,
                                         drawn_layout.bubble_y,
                                         drawn_layout.bubble_w,
@@ -633,13 +630,12 @@ void ScreenRenderer::render_element_setup_wifi_text(int bubble_x,
   const int block_y = bubble_y + std::max(0, (bubble_h - kBlockHeight) / 2);
   M5.Display.setFont(&fonts::Font2);
   printCentered("visit", block_y, false);
-  printCenteredTiny("bb0.ai", block_y + 30);
+  printCenteredTiny("BB0.AI", block_y + 30);
   M5.Display.setFont(&fonts::Font2);
   printCentered("in Google Chrome", block_y + 72, false);
 }
 
 void ScreenRenderer::render_element_setup_device_code_text(const char* device_code,
-                                                           uint32_t seconds_left,
                                                            int bubble_x,
                                                            int bubble_y,
                                                            int bubble_w,
@@ -648,19 +644,32 @@ void ScreenRenderer::render_element_setup_device_code_text(const char* device_co
   M5.Display.setTextColor(border, TFT_WHITE);
   M5.Display.setTextWrap(false);
 
-  const int text_x = bubble_x + 10;
-  const int text_w = bubble_w - 20;
-  const int block_h = 94;
+  constexpr int kDeviceCodeFontScale = 2;
+  constexpr int kDeviceCodeFontSpacing = 1;
+  constexpr int kDeviceCodeLineGap = 12;
+  const int text_x = bubble_x + 9;
+  const int text_w = bubble_w - 18;
+  const int line_h = kTinyFontGlyphHeight * kDeviceCodeFontScale;
+  const int block_h = line_h * 3 + kDeviceCodeLineGap * 2;
   const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
 
-  M5.Display.setFont(&fonts::Font2);
-  printFittedLine("Device Code", text_x, block_y, text_w, true);
-  M5.Display.setFont(&fonts::Font2);
-  printFittedLine(device_code, text_x, block_y + 30, text_w, true);
-  M5.Display.setFont(&fonts::Font0);
-  printFittedLine("confirm on bb0.ai", text_x, block_y + 60, text_w);
-  render_element_setup_device_code_countdown(
-      seconds_left, bubble_x, bubble_y, bubble_w, bubble_h);
+  auto drawCenteredTiny = [&](const char* text, int y) {
+    const int text_width =
+        tinyFontTextWidth(text, kDeviceCodeFontScale, kDeviceCodeFontSpacing);
+    const int x = text_x + std::max(0, (text_w - text_width) / 2);
+    drawTinyFontText(text,
+                     x,
+                     y,
+                     kDeviceCodeFontScale,
+                     kDeviceCodeFontSpacing,
+                     border);
+  };
+
+  const String display_code = uppercaseAscii(device_code);
+
+  drawCenteredTiny("INPUT", block_y);
+  drawCenteredTiny(display_code.c_str(), block_y + line_h + kDeviceCodeLineGap);
+  drawCenteredTiny("IN BB0.AI", block_y + (line_h + kDeviceCodeLineGap) * 2);
 }
 
 void ScreenRenderer::render_element_setup_device_code_countdown(uint32_t seconds_left,

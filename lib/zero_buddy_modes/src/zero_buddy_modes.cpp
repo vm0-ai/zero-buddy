@@ -399,7 +399,6 @@ ModeRunResult RecordingMode::main() {
   if (!ops_->clearAssistantMessages()) {
     return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantClearFailed);
   }
-  state::beginRecordingTurn(state_);
   if (shouldStop()) {
     return abortedResult();
   }

@@ -25,7 +25,7 @@ The rewritten firmware starts with four core modes:
   - Handles audio recording.
   - Entered from `DeepSleep`, `CheckAssistantMessage`, or `Read` via BtnA long press.
   - After recording completes, it automatically transitions to `DeepSleep`.
-  - Whether ASR and message sending are part of the `Recording` exit flow will be defined in a later design pass.
+  - Includes transcription, user message sending, cursor update, and check backoff reset.
 
 - `Read`
   - Lets the user read stored assistant messages.
@@ -62,7 +62,7 @@ All transitions are driven by the state machine. A mode must not directly mutate
     and assistant message files.
   - A plain BtnB restart is not a mode transition and does not mutate persistent
     global state.
-  - Runtime loops that wait on user input, Wi-Fi, ASR, status/result display, or the boot splash should poll BtnB.
+  - Runtime loops that wait on user input, Wi-Fi, transcription, status/result display, or the boot splash should poll BtnB.
   - Deep sleep wake remains owned by the configured RTC timer and BtnA wake source.
 
 ## Global State

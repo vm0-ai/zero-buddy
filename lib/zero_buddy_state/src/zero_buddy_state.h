@@ -19,16 +19,6 @@ enum class Mode : uint8_t {
   Recording,
 };
 
-enum class Event : uint8_t {
-  RtcWake,
-  BtnAShortPress,
-  BtnALongPress,
-  CheckComplete,
-  ReadComplete,
-  RecordingComplete,
-  ChargingDetected,
-};
-
 enum class RenderScreenKind : uint8_t {
   None,
   Boot,
@@ -73,12 +63,6 @@ struct DeepSleepPlan {
   uint32_t rtcDelayMs = kInitialCheckDelayMs;
 };
 
-struct Transition {
-  bool valid = false;
-  bool requiresAbort = false;
-  Mode nextMode = Mode::DeepSleep;
-};
-
 GlobalState makeDefaultGlobalState();
 
 void setMode(GlobalState* state, Mode mode);
@@ -104,20 +88,15 @@ bool shouldRenderScreen(GlobalState* state, const RenderScreenState& next);
 void setLastRenderScreenState(GlobalState* state, const RenderScreenState& next);
 void clearLastRenderScreenState(GlobalState* state);
 
-void beginRecordingTurn(GlobalState* state);
 bool commitRecordingMessageSent(GlobalState* state, const std::string& userMessageId);
 void abortRecording(GlobalState* state);
 
 bool commitAssistantCheck(GlobalState* state, const AssistantCheckResult& result);
 void abortAssistantCheck(GlobalState* state);
-
 void abortRead(GlobalState* state);
 
 DeepSleepPlan makeDeepSleepPlan(const GlobalState& state);
 void abortDeepSleep(GlobalState* state);
-
-Transition transitionForEvent(Mode mode, Event event);
-bool applyTransition(GlobalState* state, const Transition& transition);
 
 }  // namespace state
 }  // namespace zero_buddy

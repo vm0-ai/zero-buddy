@@ -7,7 +7,6 @@
 namespace {
 
 using zero_buddy::state::AssistantCheckResult;
-using zero_buddy::state::Event;
 using zero_buddy::state::Mode;
 using zero_buddy::state::RenderScreenKind;
 using zero_buddy::state::RenderScreenState;
@@ -96,16 +95,11 @@ void test_render_screen_state_helper() {
   TEST_ASSERT_TRUE(zero_buddy::state::shouldRenderScreen(&state, message));
 }
 
-void test_recording_turn_and_commit() {
+void test_recording_commit() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   zero_buddy::state::setHasAssistantMessage(&state, true);
   TEST_ASSERT_TRUE(zero_buddy::state::setLastMessageId(&state, "old-message"));
   state.checkDelayMs = 8UL * 60UL * 1000UL;
-
-  zero_buddy::state::beginRecordingTurn(&state);
-  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
-  TEST_ASSERT_EQUAL_STRING("old-message", zero_buddy::state::copyLastMessageId(state).c_str());
-  TEST_ASSERT_EQUAL_UINT32(8UL * 60UL * 1000UL, state.checkDelayMs);
 
   TEST_ASSERT_FALSE(zero_buddy::state::commitRecordingMessageSent(&state, ""));
   TEST_ASSERT_EQUAL_STRING("old-message", zero_buddy::state::copyLastMessageId(state).c_str());
@@ -114,6 +108,7 @@ void test_recording_turn_and_commit() {
   TEST_ASSERT_TRUE(zero_buddy::state::commitRecordingMessageSent(&state, "user-2"));
   TEST_ASSERT_EQUAL_STRING("user-2", zero_buddy::state::copyLastMessageId(state).c_str());
   TEST_ASSERT_EQUAL_UINT32(zero_buddy::state::kInitialCheckDelayMs, state.checkDelayMs);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
 }
 
 void test_recording_commit_rejects_overlong_id_without_mutating() {
@@ -228,77 +223,18 @@ void test_read_abort_does_not_mutate_global_state() {
   TEST_ASSERT_EQUAL_UINT32(120UL * 1000UL, state.checkDelayMs);
 }
 
-void test_deep_sleep_plan_and_abort() {
+void test_deep_sleep_plan() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
   state.checkDelayMs = 5UL * 60UL * 1000UL;
   zero_buddy::state::setHasAssistantMessage(&state, true);
 
   const auto plan = zero_buddy::state::makeDeepSleepPlan(state);
   TEST_ASSERT_EQUAL_UINT32(5UL * 60UL * 1000UL, plan.rtcDelayMs);
+  TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
 
   zero_buddy::state::abortDeepSleep(&state);
   TEST_ASSERT_EQUAL_UINT32(5UL * 60UL * 1000UL, state.checkDelayMs);
   TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
-}
-
-void test_state_transitions() {
-  auto state = zero_buddy::state::makeDefaultGlobalState();
-
-  auto transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::RtcWake);
-  TEST_ASSERT_TRUE(transition.valid);
-  TEST_ASSERT_FALSE(transition.requiresAbort);
-  assertMode(Mode::CheckAssistantMessage, transition.nextMode);
-  TEST_ASSERT_TRUE(zero_buddy::state::applyTransition(&state, transition));
-  assertMode(Mode::CheckAssistantMessage, state.currentMode);
-
-  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::BtnAShortPress);
-  TEST_ASSERT_TRUE(transition.valid);
-  TEST_ASSERT_TRUE(transition.requiresAbort);
-  assertMode(Mode::Read, transition.nextMode);
-
-  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::BtnALongPress);
-  TEST_ASSERT_TRUE(transition.valid);
-  TEST_ASSERT_TRUE(transition.requiresAbort);
-  assertMode(Mode::Recording, transition.nextMode);
-  TEST_ASSERT_TRUE(zero_buddy::state::applyTransition(&state, transition));
-  assertMode(Mode::Recording, state.currentMode);
-
-  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::RecordingComplete);
-  TEST_ASSERT_TRUE(transition.valid);
-  TEST_ASSERT_FALSE(transition.requiresAbort);
-  assertMode(Mode::DeepSleep, transition.nextMode);
-  TEST_ASSERT_TRUE(zero_buddy::state::applyTransition(&state, transition));
-  assertMode(Mode::DeepSleep, state.currentMode);
-
-  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::CheckComplete);
-  TEST_ASSERT_FALSE(transition.valid);
-  TEST_ASSERT_FALSE(zero_buddy::state::applyTransition(&state, transition));
-  assertMode(Mode::DeepSleep, state.currentMode);
-
-  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::BtnAShortPress);
-  TEST_ASSERT_TRUE(transition.valid);
-  TEST_ASSERT_TRUE(transition.requiresAbort);
-  assertMode(Mode::Read, transition.nextMode);
-  TEST_ASSERT_TRUE(zero_buddy::state::applyTransition(&state, transition));
-  assertMode(Mode::Read, state.currentMode);
-
-  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::BtnALongPress);
-  TEST_ASSERT_TRUE(transition.valid);
-  TEST_ASSERT_TRUE(transition.requiresAbort);
-  assertMode(Mode::Recording, transition.nextMode);
-
-  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::ReadComplete);
-  TEST_ASSERT_TRUE(transition.valid);
-  TEST_ASSERT_FALSE(transition.requiresAbort);
-  assertMode(Mode::DeepSleep, transition.nextMode);
-
-  zero_buddy::state::setMode(&state, Mode::DeepSleep);
-  transition = zero_buddy::state::transitionForEvent(state.currentMode, Event::ChargingDetected);
-  TEST_ASSERT_TRUE(transition.valid);
-  TEST_ASSERT_FALSE(transition.requiresAbort);
-  assertMode(Mode::Read, transition.nextMode);
-  TEST_ASSERT_TRUE(zero_buddy::state::applyTransition(&state, transition));
-  assertMode(Mode::Read, state.currentMode);
 }
 
 }  // namespace
@@ -310,7 +246,7 @@ int main() {
   RUN_TEST(test_check_delay_backoff);
   RUN_TEST(test_assistant_message_flag_helper);
   RUN_TEST(test_render_screen_state_helper);
-  RUN_TEST(test_recording_turn_and_commit);
+  RUN_TEST(test_recording_commit);
   RUN_TEST(test_recording_commit_rejects_overlong_id_without_mutating);
   RUN_TEST(test_recording_abort_does_not_mutate_global_state);
   RUN_TEST(test_commit_assistant_check_with_new_messages_does_not_own_presence_flag);
@@ -318,7 +254,6 @@ int main() {
   RUN_TEST(test_commit_assistant_check_rejects_invalid_results_without_mutating);
   RUN_TEST(test_assistant_check_abort_does_not_mutate_global_state);
   RUN_TEST(test_read_abort_does_not_mutate_global_state);
-  RUN_TEST(test_deep_sleep_plan_and_abort);
-  RUN_TEST(test_state_transitions);
+  RUN_TEST(test_deep_sleep_plan);
   return UNITY_END();
 }

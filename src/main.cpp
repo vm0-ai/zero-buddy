@@ -94,7 +94,6 @@ constexpr char kZeroTranscriptionUrl[] =
 constexpr char kZeroDeviceTokenUrl[] = "https://api.vm0.ai/api/device-token";
 constexpr char kZeroDeviceTokenPollUrl[] = "https://api.vm0.ai/api/device-token/poll";
 constexpr char kZeroUserAgent[] = "zero-buddy/0.1.0";
-constexpr char kBb0VerificationUrl[] = "https://bb0.ai";
 constexpr char kFirmwareVersion[] = "0.1.0";
 constexpr char kRuntimeConfigNamespace[] = "zero_runtime";
 constexpr char kRuntimeWifiSsidKey[] = "wifi_ssid";
@@ -1325,10 +1324,9 @@ bool waitForBleWifiCredentials() {
   if (!ensureBleProvisioningStarted()) {
     return false;
   }
-  const String device_name = bleDeviceName();
   g_ble_wifi_received = false;
   publishBleProvisioningState(zero_buddy::ProvisioningState::Setup);
-  g_screen.render_screen_setup_wifi(device_name.c_str(), kBb0VerificationUrl);
+  g_screen.render_screen_setup_wifi();
   while (!g_ble_wifi_received) {
     pollControls();
     delay(20);
@@ -1452,7 +1450,7 @@ DeviceTokenPollResult pollDeviceTokenUntilApproved(const DeviceCodeSession& sess
     const uint32_t remaining_ms = elapsed >= expires_ms ? 0 : expires_ms - elapsed;
     const uint32_t remaining_seconds = (remaining_ms + 999UL) / 1000UL;
     if (remaining_seconds != last_rendered_seconds) {
-      g_screen.render_screen_setup_device_code(session.device_code.c_str(), remaining_seconds);
+      g_screen.render_screen_setup_device_code(session.device_code.c_str());
       last_rendered_seconds = remaining_seconds;
     }
 

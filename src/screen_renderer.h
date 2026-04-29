@@ -34,8 +34,8 @@ class ScreenRenderer {
   void render_screen_recording_sent();
   void render_screen_recording_aborted();
   void render_screen_recording_failed(const char* detail);
-  void render_screen_setup_wifi(const char* device_name, const char* setup_url);
-  void render_screen_setup_device_code(const char* device_code, uint32_t seconds_left);
+  void render_screen_setup_wifi();
+  void render_screen_setup_device_code(const char* device_code);
   void render_screen_setup_status(const char* line1, const char* line2);
 
   void render_element_battery_level();
@@ -71,11 +71,6 @@ class ScreenRenderer {
                                              int bubble_y,
                                              int bubble_w,
                                              int bubble_h);
-  void render_element_setup_device_code_countdown(uint32_t seconds_left,
-                                                  int bubble_x,
-                                                  int bubble_y,
-                                                  int bubble_w,
-                                                  int bubble_h);
   void render_element_recording_sending_text(const std::string& user_text,
                                              int bubble_x,
                                              int bubble_y,

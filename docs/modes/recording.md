@@ -110,7 +110,7 @@ Typical trigger:
 `abort(reason)` must:
 
 - Stop microphone capture if it is active.
-- Stop or signal cancellation for in-flight ASR or message-send work.
+- Stop or signal cancellation for in-flight transcription or message-send work.
 - Close any open LittleFS file handle owned by this mode.
 - Delete the temporary voice file from LittleFS.
 - Avoid leaving a partially written voice file.
@@ -137,8 +137,8 @@ Those are state machine or later mode responsibilities.
 In addition to deleting the voice file, abort should clean up mode-owned runtime resources:
 
 - microphone/I2S state,
-- ASR session handles,
-- HTTP request handles,
+- transcription HTTP request handles,
+- message-send HTTP request handles,
 - temporary buffers owned by the mode,
 - open LittleFS file handles.
 

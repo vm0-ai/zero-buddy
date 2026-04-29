@@ -72,19 +72,14 @@ The methods here are intentionally small and deterministic. They do not touch Wi
 
 ## Recording Commit And Abort
 
-- `beginRecordingTurn(state)`
-  - Does not clear assistant message presence; `clear_assistant_message` owns that.
-  - Does not clear `lastMessageId`.
-  - Does not change `checkDelayMs`.
-
 - `commitRecordingMessageSent(state, userMessageId)`
   - Writes `lastMessageId = userMessageId`.
   - Resets `checkDelayMs` to 30 seconds.
   - Rejects an empty `userMessageId`.
 
 - `abortRecording(state)`
-  - No-op for global state.
-  - Recording abort cleanup is mode-owned: stop mic, close files, delete voice temp files, cancel ASR/HTTP handles.
+  - Does not mutate shared state.
+  - Recording abort cleanup is mode-owned: stop mic, close files, delete voice temp files, cancel transcription/message-send HTTP handles.
 
 ## CheckAssistantMessage Commit And Abort
 
@@ -96,13 +91,13 @@ The methods here are intentionally small and deterministic. They do not touch Wi
   - Does not update `hasAssistantMessage`; `append_assistant_message` owns that.
 
 - `abortAssistantCheck(state)`
-  - No-op for global state.
+  - Does not mutate shared state.
   - Check abort cleanup is mode-owned: cancel network work, close files, delete temp poll files, avoid committing metadata.
 
 ## Read Abort
 
 - `abortRead(state)`
-  - No-op for global state.
+  - Does not mutate shared state.
   - Read progress is persisted by the Read mode storage helper after each completed scroll or message advance.
   - Read abort cleanup is mode-owned: close any message file handle and leave the last cleanly saved progress intact.
 
@@ -112,14 +107,5 @@ The methods here are intentionally small and deterministic. They do not touch Wi
   - Returns the RTC delay that `DeepSleep.main()` should apply.
 
 - `abortDeepSleep(state)`
-  - No-op for global state.
+  - Does not mutate shared state.
   - DeepSleep abort cleanup is mode-owned: cancel RTC timer only.
-
-## State Transitions
-
-- `transitionForEvent(mode, event)`
-  - Pure transition reducer for the four-mode state machine.
-  - Indicates whether the current mode must be aborted before entering the next mode.
-
-- `applyTransition(state, transition)`
-  - Updates `currentMode` if the transition is valid.

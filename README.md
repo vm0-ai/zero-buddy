@@ -33,7 +33,7 @@ same reset.
 Runtime Wi-Fi setup is BLE-only. Open `https://bb0.ai` in Chrome, connect to
 `Zero-Buddy-xxxx` with Web Bluetooth, and the page writes Wi-Fi credentials back
 to the device. After Wi-Fi is configured, BLE stops and device auth continues
-over HTTPS with an on-device device-code countdown.
+over HTTPS with an on-device device-code approval flow.
 
 Provisioning discovery uses BLE service UUID
 `bb000001-8f16-4b2a-9bb0-000000000001`. Advertising exposes only coarse Wi-Fi

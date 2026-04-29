@@ -65,7 +65,7 @@ Goal: obtain usable Zero auth.
      `{"device_type":"bb0","device_id":"Zero-Buddy-F1B4","firmware_version":"0.1.0"}`
 2. The response must include `device_code`, `poll_token`, `expires_in`, and
    `interval`.
-3. Display the returned `device_code` with a 5 minute countdown.
+3. Display the returned `device_code` while the code remains valid.
 4. Poll `POST https://api.vm0.ai/api/device-token/poll` with
    `device_code` and `poll_token` until the server returns `api_token` and
    `thread_id`.

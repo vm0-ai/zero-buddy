@@ -137,8 +137,6 @@ void clearLastRenderScreenState(GlobalState* state) {
   state->lastRenderScreenState = RenderScreenState();
 }
 
-void beginRecordingTurn(GlobalState*) {}
-
 bool commitRecordingMessageSent(GlobalState* state, const std::string& userMessageId) {
   if (!hasState(state) || userMessageId.empty() || !messageIdFits(userMessageId)) {
     return false;
@@ -187,74 +185,6 @@ DeepSleepPlan makeDeepSleepPlan(const GlobalState& state) {
 }
 
 void abortDeepSleep(GlobalState*) {}
-
-Transition transitionForEvent(Mode mode, Event event) {
-  Transition transition;
-  transition.nextMode = mode;
-
-  switch (mode) {
-    case Mode::DeepSleep:
-      if (event == Event::RtcWake) {
-        transition.valid = true;
-        transition.nextMode = Mode::CheckAssistantMessage;
-      } else if (event == Event::ChargingDetected) {
-        transition.valid = true;
-        transition.nextMode = Mode::Read;
-      } else if (event == Event::BtnAShortPress) {
-        transition.valid = true;
-        transition.requiresAbort = true;
-        transition.nextMode = Mode::Read;
-      } else if (event == Event::BtnALongPress) {
-        transition.valid = true;
-        transition.requiresAbort = true;
-        transition.nextMode = Mode::Recording;
-      }
-      break;
-
-    case Mode::CheckAssistantMessage:
-      if (event == Event::CheckComplete) {
-        transition.valid = true;
-        transition.nextMode = Mode::DeepSleep;
-      } else if (event == Event::BtnAShortPress) {
-        transition.valid = true;
-        transition.requiresAbort = true;
-        transition.nextMode = Mode::Read;
-      } else if (event == Event::BtnALongPress) {
-        transition.valid = true;
-        transition.requiresAbort = true;
-        transition.nextMode = Mode::Recording;
-      }
-      break;
-
-    case Mode::Read:
-      if (event == Event::ReadComplete) {
-        transition.valid = true;
-        transition.nextMode = Mode::DeepSleep;
-      } else if (event == Event::BtnALongPress) {
-        transition.valid = true;
-        transition.requiresAbort = true;
-        transition.nextMode = Mode::Recording;
-      }
-      break;
-
-    case Mode::Recording:
-      if (event == Event::RecordingComplete) {
-        transition.valid = true;
-        transition.nextMode = Mode::DeepSleep;
-      }
-      break;
-  }
-
-  return transition;
-}
-
-bool applyTransition(GlobalState* state, const Transition& transition) {
-  if (!hasState(state) || !transition.valid) {
-    return false;
-  }
-  state->currentMode = transition.nextMode;
-  return true;
-}
 
 }  // namespace state
 }  // namespace zero_buddy

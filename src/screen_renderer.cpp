@@ -377,9 +377,7 @@ void ScreenRenderer::render_screen_recording_failed(const char* detail) {
   render_element_battery_level();
 }
 
-void ScreenRenderer::render_screen_setup_wifi(const char* device_name, const char* setup_url) {
-  (void)device_name;
-  (void)setup_url;
+void ScreenRenderer::render_screen_setup_wifi() {
   state::RenderScreenState next;
   next.kind = state::RenderScreenKind::SetupWifi;
   next.value1 = hashText("visit");
@@ -406,9 +404,7 @@ void ScreenRenderer::render_screen_setup_wifi(const char* device_name, const cha
   render_element_battery_level();
 }
 
-void ScreenRenderer::render_screen_setup_device_code(const char* device_code,
-                                                     uint32_t seconds_left) {
-  (void)seconds_left;
+void ScreenRenderer::render_screen_setup_device_code(const char* device_code) {
   const String display_code = uppercaseAscii(device_code);
   state::RenderScreenState next;
   next.kind = state::RenderScreenKind::SetupDeviceCode;
@@ -670,32 +666,6 @@ void ScreenRenderer::render_element_setup_device_code_text(const char* device_co
   drawCenteredTiny("INPUT", block_y);
   drawCenteredTiny(display_code.c_str(), block_y + line_h + kDeviceCodeLineGap);
   drawCenteredTiny("IN BB0.AI", block_y + (line_h + kDeviceCodeLineGap) * 2);
-}
-
-void ScreenRenderer::render_element_setup_device_code_countdown(uint32_t seconds_left,
-                                                                int bubble_x,
-                                                                int bubble_y,
-                                                                int bubble_w,
-                                                                int bubble_h) {
-  char countdown[24] = {0};
-  snprintf(countdown,
-           sizeof(countdown),
-           "expires %u:%02u",
-           static_cast<unsigned>(seconds_left / 60),
-           static_cast<unsigned>(seconds_left % 60));
-
-  const uint16_t border = dialogueBorderColor();
-  M5.Display.setTextColor(border, TFT_WHITE);
-  M5.Display.setTextWrap(false);
-  M5.Display.setFont(&fonts::Font0);
-
-  const int text_x = bubble_x + 10;
-  const int text_w = bubble_w - 20;
-  const int block_h = 94;
-  const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
-  const int countdown_y = block_y + 80;
-  M5.Display.fillRect(text_x, countdown_y, text_w, 12, TFT_WHITE);
-  printFittedLine(countdown, text_x, countdown_y, text_w);
 }
 
 void ScreenRenderer::render_element_recording_sending_text(

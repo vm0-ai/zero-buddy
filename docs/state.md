@@ -54,15 +54,39 @@ All transitions are driven by the state machine. A mode must not directly mutate
 
 ## Global Hardware Controls
 
-- BtnB is a global runtime control.
-  - A short BtnB press restarts the firmware with `esp_restart()`.
-  - Holding BtnA while pressing BtnB clears runtime provisioning config before
-    restarting. This clears Wi-Fi, auth token, thread id, local message cursor,
-    and assistant message files.
-  - A plain BtnB restart is not a mode transition and does not mutate persistent
-    global state.
-  - Runtime loops that wait on user input, Wi-Fi, transcription, status/result display, or the boot splash should poll BtnB.
-  - Deep sleep wake remains owned by the configured RTC timer and BtnA wake source.
+- G12 / BtnB is a global backlight control while firmware is awake.
+  - Each press cycles through five persisted brightness levels and then full off.
+  - This is not a mode transition and does not mutate chat or assistant state.
+- The side Reset / PWR button is handled through the M5PM1 power-management chip.
+  - A short press restarts the firmware.
+  - Holding it for 2 seconds clears runtime provisioning config before restarting.
+    This clears Wi-Fi, auth token, thread id, local message cursor, and assistant
+    message files.
+  - Firmware uses the official `M5PM1` driver for PMIC button state and
+    long-press threshold configuration.
+- Runtime loops that wait on user input, Wi-Fi, transcription, status/result display, or the boot splash should poll global controls.
+- Deep sleep wake remains owned by the configured RTC timer and BtnA wake source.
+
+## Power Management
+
+The firmware treats `M5.Power` from M5Unified as the source of truth for normal
+power state:
+
+- Boot enables battery charging with `M5.Power.setBatteryCharge(true)`.
+- The main loop samples a power snapshot with `getBatteryLevel`,
+  `getBatteryVoltage`, `getBatteryCurrent`, `getVBUSVoltage`, and `isCharging`.
+- External power detection uses the official `M5PM1.getPowerSource()` source bits;
+  VBUS voltage and charging state are not used as external-power fallbacks.
+- Rendering receives the sampled snapshot instead of reading PMIC registers
+  directly.
+- Deep sleep still configures the app-specific RTC and BtnA wake sources, then
+  enters sleep through `M5.Power.deepSleep(..., false)` so M5Unified owns the
+  final display sleep and ESP deep-sleep sequence.
+- Software events are derived by diffing snapshots: external power changes,
+  charging state changes, battery percentage changes, and low-battery changes.
+- The side Reset / PWR button is the exception: M5Unified does not expose
+  StickS3/M5PM1 button hold timing as a complete firmware-reset control, so the
+  firmware uses the official `M5PM1` driver for that button.
 
 ## Global State
 

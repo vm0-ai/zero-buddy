@@ -1,7 +1,6 @@
 # Zero Buddy
 
-Firmware for a small AI voice companion on M5StickC Plus / M5StickC-compatible
-ESP32 hardware.
+Firmware for a small AI voice companion on M5StickS3 ESP32-S3 hardware.
 
 Zero Buddy records raw microphone audio, sends PCM bytes to Zero's
 transcription API, sends the recognized text to a Zero chat thread, polls that
@@ -10,13 +9,17 @@ renders them on the device screen.
 
 ## Hardware
 
-- Target board: `m5stick-c`
-- Display: M5StickC Plus style screen
+- Target board: M5StickS3
+- Display: 1.14" StickS3 LCD
+- Power: battery, VBUS, and charging state are sampled through M5Unified
+  `M5.Power` APIs; external power detection uses the M5PM1 SDK power-source
+  bits.
 - Input:
   - BtnA short press: open `Read`
   - BtnA long press: open `Recording`
-  - BtnB press: restart
-  - Hold BtnA while pressing BtnB: clear runtime provisioning config and restart
+  - G12 / BtnB press: cycle five persisted backlight levels, then off
+  - Side Reset short press: restart
+  - Side Reset long press for 2 seconds: clear runtime provisioning config and restart
 - Status LED reflects whether LittleFS currently has unread assistant messages.
 
 ## Core Modes
@@ -83,6 +86,7 @@ stored in NVS namespace `zero_runtime`:
 - `wifi_password`
 - `auth_token`
 - `thread_id`
+- `backlight`
 
 Setup is BLE-first:
 

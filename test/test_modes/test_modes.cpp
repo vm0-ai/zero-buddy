@@ -109,12 +109,12 @@ struct FakeDeepSleepOps : DeepSleepOps {
   std::vector<std::string> calls;
   uint32_t rtc_delay_ms = 0;
   bool led = true;
-  bool charging = false;
+  bool external_power = false;
   std::function<void()> on_rtc;
   std::function<void()> on_button;
   std::function<void()> on_screen;
   std::function<void()> on_disconnect;
-  std::function<void()> on_charging;
+  std::function<void()> on_external_power_check;
 
   void configureRtcWake(uint32_t delay_ms) override {
     rtc_delay_ms = delay_ms;
@@ -145,12 +145,12 @@ struct FakeDeepSleepOps : DeepSleepOps {
     }
   }
 
-  bool isCharging() override {
-    calls.push_back("charging?");
-    if (on_charging) {
-      on_charging();
+  bool isExternalPowerPresent() override {
+    calls.push_back("external-power?");
+    if (on_external_power_check) {
+      on_external_power_check();
     }
-    return charging;
+    return external_power;
   }
 
   void enterCpuHibernate() override {
@@ -544,7 +544,7 @@ void test_deep_sleep_main_runs_hibernate_last() {
   TEST_ASSERT_FALSE(ops.calls.empty());
   TEST_ASSERT_EQUAL_STRING("hibernate", ops.calls.back().c_str());
   TEST_ASSERT_TRUE(ops.led);
-  TEST_ASSERT_EQUAL_STRING("charging?,rtc:300000,btn-wake,screen-off,wifi-disconnect,hibernate",
+  TEST_ASSERT_EQUAL_STRING("external-power?,rtc:300000,btn-wake,screen-off,wifi-disconnect,hibernate",
                            joinCalls(ops.calls).c_str());
 }
 
@@ -557,35 +557,35 @@ void test_deep_sleep_main_never_changes_led() {
   assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
 
   TEST_ASSERT_TRUE(ops.led);
-  TEST_ASSERT_EQUAL_STRING("charging?,rtc:30000,btn-wake,screen-off,wifi-disconnect,hibernate",
+  TEST_ASSERT_EQUAL_STRING("external-power?,rtc:30000,btn-wake,screen-off,wifi-disconnect,hibernate",
                            joinCalls(ops.calls).c_str());
 }
 
-void test_deep_sleep_main_completes_without_rtc_when_charging() {
+void test_deep_sleep_main_completes_without_rtc_when_external_power_present() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
 
   FakeDeepSleepOps ops;
-  ops.charging = true;
+  ops.external_power = true;
   DeepSleepMode mode(&state, &ops);
   assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
 
   TEST_ASSERT_EQUAL_UINT32(0, ops.rtc_delay_ms);
-  TEST_ASSERT_EQUAL_STRING("charging?",
+  TEST_ASSERT_EQUAL_STRING("external-power?",
                            joinCalls(ops.calls).c_str());
 }
 
-void test_deep_sleep_abort_during_charging_check_cancels_timer() {
+void test_deep_sleep_abort_during_external_power_check_cancels_timer() {
   auto state = zero_buddy::state::makeDefaultGlobalState();
 
   FakeDeepSleepOps ops;
   DeepSleepMode mode(&state, &ops);
-  ops.on_charging = [&]() {
+  ops.on_external_power_check = [&]() {
     mode.abort("btn_a_long_press");
   };
 
   assertResult(ModeRunStatus::Aborted, ModeRunError::None, mode.main());
   TEST_ASSERT_TRUE(mode.abortRequested());
-  TEST_ASSERT_EQUAL_STRING("charging?,cancel-rtc",
+  TEST_ASSERT_EQUAL_STRING("external-power?,cancel-rtc",
                            joinCalls(ops.calls).c_str());
 }
 
@@ -602,11 +602,11 @@ void test_deep_sleep_abort_after_screen_off_cancels_timer_without_touching_led()
   assertResult(ModeRunStatus::Aborted, ModeRunError::None, mode.main());
   TEST_ASSERT_TRUE(mode.abortRequested());
   TEST_ASSERT_TRUE(ops.led);
-  TEST_ASSERT_EQUAL_STRING("charging?,rtc:30000,btn-wake,screen-off,cancel-rtc",
+  TEST_ASSERT_EQUAL_STRING("external-power?,rtc:30000,btn-wake,screen-off,cancel-rtc",
                            joinCalls(ops.calls).c_str());
 
   mode.abort("again");
-  TEST_ASSERT_EQUAL_STRING("charging?,rtc:30000,btn-wake,screen-off,cancel-rtc",
+  TEST_ASSERT_EQUAL_STRING("external-power?,rtc:30000,btn-wake,screen-off,cancel-rtc",
                            joinCalls(ops.calls).c_str());
 }
 
@@ -858,8 +858,8 @@ int main() {
   RUN_TEST(test_check_assistant_abort_during_poll_cleans_without_commit);
   RUN_TEST(test_deep_sleep_main_runs_hibernate_last);
   RUN_TEST(test_deep_sleep_main_never_changes_led);
-  RUN_TEST(test_deep_sleep_main_completes_without_rtc_when_charging);
-  RUN_TEST(test_deep_sleep_abort_during_charging_check_cancels_timer);
+  RUN_TEST(test_deep_sleep_main_completes_without_rtc_when_external_power_present);
+  RUN_TEST(test_deep_sleep_abort_during_external_power_check_cancels_timer);
   RUN_TEST(test_deep_sleep_abort_after_screen_off_cancels_timer_without_touching_led);
   RUN_TEST(test_read_main_without_messages_shows_empty_and_completes);
   RUN_TEST(test_read_empty_short_press_resets_idle_timer);

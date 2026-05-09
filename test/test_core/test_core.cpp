@@ -21,14 +21,6 @@ void test_zero_messages_response_parsing() {
   TEST_ASSERT_TRUE(messages.assistant_messages[0].find("🚀") == std::string::npos);
 }
 
-void test_external_power_present_prefers_vbus_over_charge_current() {
-  TEST_ASSERT_TRUE(zero_buddy::externalPowerPresent(5000, false));
-  TEST_ASSERT_TRUE(zero_buddy::externalPowerPresent(-1, true));
-  TEST_ASSERT_FALSE(zero_buddy::externalPowerPresent(-1, false));
-  TEST_ASSERT_FALSE(zero_buddy::externalPowerPresent(4200, false));
-  TEST_ASSERT_TRUE(zero_buddy::externalPowerPresent(4200, false, 4000));
-}
-
 void test_boot_repair_actions() {
   auto action =
       zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::WifiUnavailable);
@@ -124,7 +116,6 @@ void test_persistent_cursor_selects_only_matching_thread() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_zero_messages_response_parsing);
-  RUN_TEST(test_external_power_present_prefers_vbus_over_charge_current);
   RUN_TEST(test_boot_repair_actions);
   RUN_TEST(test_provisioning_service_data_encoding);
   RUN_TEST(test_assistant_queue_manifest_round_trip);

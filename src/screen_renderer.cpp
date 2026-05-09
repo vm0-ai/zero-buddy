@@ -10,7 +10,6 @@ namespace zero_buddy {
 namespace screen {
 namespace {
 
-constexpr uint8_t kScreenBrightness = 90;
 constexpr uint8_t kPortraitRotation = 0;
 constexpr uint8_t kReadPaddingTop = 8;
 constexpr uint8_t kReadPaddingRight = 8;
@@ -37,6 +36,8 @@ constexpr int kTopBarBottomGap = 5;
 constexpr int kBatteryBodyWidth = 15;
 constexpr int kBatteryBodyHeight = 10;
 constexpr int kBatteryCapWidth = 2;
+constexpr int kBatteryPercentWidth = 28;
+constexpr int kBatteryClearHeight = 13;
 constexpr int kCheckingIconWidth = 10;
 constexpr int kCheckingIconHeight = 14;
 constexpr int kCheckingIconGap = 5;
@@ -447,15 +448,36 @@ void ScreenRenderer::setSharedState(state::GlobalState* shared_state) {
   shared_state_ = shared_state;
 }
 
+void ScreenRenderer::setPowerSnapshot(const power::PowerSnapshot& snapshot) {
+  power_snapshot_ = snapshot;
+  power_snapshot_valid_ = true;
+}
+
 void ScreenRenderer::screenOn() {
+  M5.Display.wakeup();
   M5.Display.setRotation(kPortraitRotation);
-  M5.Display.setBrightness(kScreenBrightness);
+  M5.Display.setBrightness(backlight_brightness_);
+  screen_on_ = true;
 }
 
 void ScreenRenderer::screenOff() {
+  M5.Display.wakeup();
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setBrightness(0);
+  M5.Display.sleep();
+  screen_on_ = false;
   clearRenderState();
+}
+
+void ScreenRenderer::setBacklightBrightness(uint8_t brightness) {
+  backlight_brightness_ = brightness;
+  if (screen_on_) {
+    M5.Display.setBrightness(backlight_brightness_);
+  }
+}
+
+uint8_t ScreenRenderer::backlightBrightness() const {
+  return backlight_brightness_;
 }
 
 void ScreenRenderer::render_screen_boot() {
@@ -587,11 +609,18 @@ void ScreenRenderer::render_screen_setup_status(const char* line1, const char* l
 }
 
 void ScreenRenderer::render_element_battery_level() {
-  const uint8_t bars = batteryLevelBars();
-  if (local_.battery_visible && local_.battery_bars == bars) {
+  const int16_t percent = batteryLevelPercent();
+  const bool percent_mode = batteryPercentMode();
+  const uint8_t bars = batteryLevelBarsFor(percent);
+  if (local_.battery_visible &&
+      local_.battery_percent_mode == percent_mode &&
+      ((percent_mode && local_.battery_percent == percent) ||
+       (!percent_mode && local_.battery_bars == bars))) {
     return;
   }
   local_.battery_visible = true;
+  local_.battery_percent_mode = percent_mode;
+  local_.battery_percent = percent;
   local_.battery_bars = bars;
 
   const uint16_t bg = avatarBackgroundColor();
@@ -603,9 +632,20 @@ void ScreenRenderer::render_element_battery_level() {
   const int y = layout.battery.y;
   M5.Display.fillRect(std::max(0, x - 1),
                       std::max(0, y - 1),
-                      kBatteryBodyWidth + kBatteryCapWidth + 3,
-                      kBatteryBodyHeight + 2,
+                      layout.battery.w + 2,
+                      kBatteryClearHeight,
                       bg);
+
+  if (percent_mode) {
+    M5.Display.setTextColor(fg, bg);
+    M5.Display.setTextWrap(false);
+    M5.Display.setFont(&fonts::Font0);
+    const String text = percent < 0 ? String("--%") : String(percent) + "%";
+    M5.Display.setCursor(x, y + 1);
+    M5.Display.print(text);
+    return;
+  }
+
   M5.Display.drawRect(x, y, kBatteryBodyWidth, kBatteryBodyHeight, fg);
   M5.Display.fillRect(x + kBatteryBodyWidth, y + 3, kBatteryCapWidth, 4, fg);
 
@@ -936,6 +976,8 @@ bool ScreenRenderer::sameRenderState(const state::RenderScreenState& next) const
 
 void ScreenRenderer::resetElementState() {
   local_.battery_bars = 0xFF;
+  local_.battery_percent = -2;
+  local_.battery_percent_mode = false;
   local_.battery_visible = false;
   local_.checking_indicator_visible = false;
 }
@@ -1100,8 +1142,8 @@ ScreenRenderer::Rect ScreenRenderer::batteryRect(const Rect& screen) const {
   return Rect{
       kReadPaddingLeft,
       kReadPaddingTop + 1,
-      kBatteryBodyWidth + kBatteryCapWidth,
-      kBatteryBodyHeight,
+      std::max(kBatteryBodyWidth + kBatteryCapWidth, kBatteryPercentWidth),
+      kBatteryClearHeight,
   };
 }
 
@@ -1338,19 +1380,25 @@ uint16_t ScreenRenderer::avatarColor(uint8_t row, int col) const {
   }
 }
 
+bool ScreenRenderer::batteryPercentMode() const {
+  return power_snapshot_valid_ &&
+         power::shouldShowBatteryPercent(power_snapshot_);
+}
+
+int16_t ScreenRenderer::batteryLevelPercent() const {
+  if (!power_snapshot_valid_ || power_snapshot_.battery_percent < 0) {
+    return -1;
+  }
+  return static_cast<int16_t>(
+      std::max<int32_t>(0, std::min<int32_t>(100, power_snapshot_.battery_percent)));
+}
+
 uint8_t ScreenRenderer::batteryLevelBars() const {
-  return batteryLevelBarsFor(M5.Power.getBatteryLevel());
+  return batteryLevelBarsFor(batteryLevelPercent());
 }
 
 uint8_t ScreenRenderer::batteryLevelBarsFor(int32_t level) const {
-  if (level < 0) {
-    return 0;
-  }
-  const int32_t clamped = std::max<int32_t>(0, std::min<int32_t>(100, level));
-  if (clamped == 0) {
-    return 0;
-  }
-  return static_cast<uint8_t>(std::min<int32_t>(3, (clamped + 33) / 34));
+  return power::batteryBarsForPercent(level);
 }
 
 size_t ScreenRenderer::readBodyTop() const {

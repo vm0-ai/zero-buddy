@@ -2,6 +2,7 @@
 #include <HTTPClient.h>
 #include <LittleFS.h>
 #include <M5Unified.h>
+#include <M5PM1.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -41,8 +42,10 @@
 #endif
 
 #include "screen_renderer.h"
+#include "zero_buddy_controls.h"
 #include "zero_buddy_core.h"
 #include "zero_buddy_modes.h"
+#include "zero_buddy_power.h"
 #include "zero_buddy_state.h"
 
 namespace {
@@ -63,10 +66,10 @@ using zero_buddy::modes::RecordingOps;
 using zero_buddy::state::AssistantCheckResult;
 using zero_buddy::state::GlobalState;
 using zero_buddy::screen::ScreenRenderer;
+using zero_buddy::controls::ResetButtonAction;
 
 constexpr uint32_t kRtcMagic = 0x5A0B2028UL;
 constexpr gpio_num_t kBtnAWakePin = GPIO_NUM_11;
-constexpr gpio_num_t kBtnBPin = GPIO_NUM_12;
 constexpr gpio_num_t kLedGpio = GPIO_NUM_10;
 constexpr int kLedPin = static_cast<int>(kLedGpio);
 constexpr uint8_t kBeepVolume = 192;
@@ -100,6 +103,7 @@ constexpr char kRuntimeAuthTokenKey[] = "auth_token";
 constexpr char kRuntimeThreadIdKey[] = "thread_id";
 constexpr char kRuntimeLastMessageIdKey[] = "last_msg_id";
 constexpr char kRuntimeLastMessageThreadIdKey[] = "last_msg_thr";
+constexpr char kRuntimeBacklightStepKey[] = "backlight";
 constexpr size_t kMaxWifiSsidChars = 64;
 constexpr size_t kMaxWifiPasswordChars = 128;
 constexpr size_t kMaxAuthTokenChars = 768;
@@ -107,6 +111,7 @@ constexpr size_t kMaxThreadIdChars = 96;
 constexpr size_t kMaxLastMessageIdChars = zero_buddy::state::kLastMessageIdBytes - 1;
 constexpr size_t kMaxPollTokenChars = 512;
 constexpr uint32_t kProvisioningConnectAttemptMs = 20000;
+constexpr uint32_t kPowerEventPollMs = 3000;
 constexpr char kBb0BleServiceUuid[] = "bb000001-8f16-4b2a-9bb0-000000000001";
 constexpr char kBb0BleInfoUuid[] = "bb000002-8f16-4b2a-9bb0-000000000001";
 constexpr char kBb0BleConfigUuid[] = "bb000003-8f16-4b2a-9bb0-000000000001";
@@ -115,15 +120,21 @@ constexpr uint8_t kBleFlagWifiConfigured = 1U << 0;
 constexpr uint8_t kBleFlagAuthConfigured = 1U << 1;
 constexpr uint8_t kBleFlagThreadConfigured = 1U << 2;
 constexpr uint8_t kBleFlagError = 1U << 7;
+constexpr uint32_t kM5Pm1I2cFreq = M5PM1_I2C_FREQ_100K;
 
 RTC_DATA_ATTR uint32_t g_rtc_magic = 0;
 RTC_DATA_ATTR GlobalState g_state;
 
 ScreenRenderer g_screen(&g_state);
 uint8_t g_pcm_buffer[kPcmBufferBytes] = {0};
-bool g_btn_b_was_down = false;
-volatile bool g_btn_b_interrupt_pending = false;
-uint32_t g_last_btn_b_restart_ms = 0;
+uint32_t g_last_btn_b_brightness_ms = 0;
+uint8_t g_backlight_step = zero_buddy::controls::kBacklightDefaultStep;
+zero_buddy::controls::ResetButtonState g_reset_button_state;
+zero_buddy::power::PowerSnapshot g_power_snapshot;
+bool g_power_snapshot_valid = false;
+uint32_t g_last_power_poll_ms = 0;
+M5PM1 g_pm1;
+bool g_pm1_ready = false;
 bool g_ble_wifi_received = false;
 String g_ble_wifi_ssid;
 String g_ble_wifi_password;
@@ -135,6 +146,9 @@ void beepAssistantLedOn();
 bool writeTextFile(const char* path, const std::string& value);
 bool writeAssistantQueueManifest(size_t count, size_t index, size_t scroll_top);
 void clearRuntimeConfig();
+bool saveRuntimeBacklightStep(uint8_t step);
+void handleResetButton();
+bool refreshPowerSnapshot(bool force);
 
 bool stateLooksValid(const GlobalState& state) {
   if (state.checkDelayMs == 0 ||
@@ -220,49 +234,209 @@ void beepAssistantLedOn() {
 }
 
 bool buttonADown() {
-  return digitalRead(static_cast<int>(kBtnAWakePin)) == LOW;
+  return M5.BtnA.isPressed();
 }
 
-bool buttonBDown() {
-  return digitalRead(static_cast<int>(kBtnBPin)) == LOW;
-}
-
-void IRAM_ATTR handleBtnBFallingInterrupt() {
-  g_btn_b_interrupt_pending = true;
-}
-
-void restartIfBtnBPressed() {
-  const bool down = buttonBDown();
-  const bool interrupt_pending = g_btn_b_interrupt_pending;
-  if (interrupt_pending) {
-    g_btn_b_interrupt_pending = false;
+void configureResetButtonPmic() {
+  const auto begin_result =
+      g_pm1.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, kM5Pm1I2cFreq);
+  g_pm1_ready = begin_result == M5PM1_OK;
+  if (!g_pm1_ready) {
+    Serial.printf("Reset button PMIC begin failed: %d\n",
+                  static_cast<int>(begin_result));
+    return;
   }
-  const bool pressed = interrupt_pending || (down && !g_btn_b_was_down);
-  g_btn_b_was_down = down;
-  if (pressed) {
+  const auto config_result =
+      g_pm1.btnSetConfig(M5PM1_BTN_TYPE_LONG, M5PM1_BTN_LONG_PRESS_DELAY_4000MS);
+  if (config_result != M5PM1_OK) {
+    Serial.printf("Reset button PMIC config failed: %d\n",
+                  static_cast<int>(config_result));
+    return;
+  }
+  Serial.println("Reset button PMIC config ok");
+}
+
+bool resetButtonDown(bool* down_out) {
+  if (down_out == nullptr || !g_pm1_ready) {
+    return false;
+  }
+  const auto result = g_pm1.btnGetState(down_out);
+  if (result != M5PM1_OK) {
+    return false;
+  }
+  return true;
+}
+
+void handleBrightnessButton() {
+  if (M5.BtnB.wasPressed()) {
     const uint32_t now = millis();
-    if (now - g_last_btn_b_restart_ms < 250) {
+    if (now - g_last_btn_b_brightness_ms < 250) {
       return;
     }
-    g_last_btn_b_restart_ms = now;
-    if (buttonADown()) {
-      Serial.println("BtnA+BtnB clear runtime config");
-      clearRuntimeConfig();
-      g_screen.render_screen_setup_status("runtime config", "cleared");
-      Serial.flush();
-      delay(800);
-      esp_restart();
-    }
-    Serial.println("BtnB restart");
-    Serial.flush();
-    delay(20);
-    esp_restart();
+    g_last_btn_b_brightness_ms = now;
+    g_backlight_step = zero_buddy::controls::nextBacklightStep(g_backlight_step);
+    g_screen.setBacklightBrightness(
+        zero_buddy::controls::backlightBrightnessForStep(g_backlight_step));
+    saveRuntimeBacklightStep(g_backlight_step);
+    Serial.printf("BtnB backlight step %u brightness %u\n",
+                  g_backlight_step,
+                  g_screen.backlightBrightness());
   }
+}
+
+zero_buddy::power::ChargeState toPowerChargeState(
+    m5::Power_Class::is_charging_t state) {
+  switch (state) {
+    case m5::Power_Class::is_charging:
+      return zero_buddy::power::ChargeState::Charging;
+    case m5::Power_Class::is_discharging:
+      return zero_buddy::power::ChargeState::Discharging;
+    case m5::Power_Class::charge_unknown:
+    default:
+      return zero_buddy::power::ChargeState::Unknown;
+  }
+}
+
+const char* chargeStateName(zero_buddy::power::ChargeState state) {
+  switch (state) {
+    case zero_buddy::power::ChargeState::Charging:
+      return "charging";
+    case zero_buddy::power::ChargeState::Discharging:
+      return "discharging";
+    case zero_buddy::power::ChargeState::Unknown:
+    default:
+      return "unknown";
+  }
+}
+
+bool isExternalM5Pm1PowerSource(uint8_t source_bits) {
+  return zero_buddy::power::m5pm1PowerSourceHasExternal(source_bits);
+}
+
+const char* m5pm1PowerSourceName(int8_t source_bits) {
+  switch (source_bits) {
+    case 0x00:
+      return "none";
+    case 0x01:
+      return "5vin";
+    case 0x02:
+      return "5vinout";
+    case 0x03:
+      return "5vin+5vinout";
+    case 0x04:
+      return "bat";
+    case 0x05:
+      return "5vin+bat";
+    case 0x06:
+      return "5vinout+bat";
+    case 0x07:
+      return "5vin+5vinout+bat";
+    default:
+      return "invalid";
+  }
+}
+
+uint8_t readM5Pm1PowerSourceBits() {
+  if (!g_pm1_ready) {
+    return 0;
+  }
+  m5pm1_pwr_src_t source = M5PM1_PWR_SRC_UNKNOWN;
+  const auto result = g_pm1.getPowerSource(&source);
+  if (result != M5PM1_OK) {
+    Serial.printf("power source read failed: %d\n", static_cast<int>(result));
+    return 0;
+  }
+  return static_cast<uint8_t>(source) & 0x07;
+}
+
+int16_t clampBatteryPercent(int32_t level) {
+  if (level < 0) {
+    return -1;
+  }
+  return static_cast<int16_t>(std::max<int32_t>(0, std::min<int32_t>(100, level)));
+}
+
+zero_buddy::power::PowerSnapshot readM5UnifiedPowerSnapshot() {
+  zero_buddy::power::PowerSnapshot snapshot;
+  snapshot.battery_percent = clampBatteryPercent(M5.Power.getBatteryLevel());
+  snapshot.battery_mv = M5.Power.getBatteryVoltage();
+  snapshot.battery_current_ma = M5.Power.getBatteryCurrent();
+  snapshot.vbus_mv = M5.Power.getVBUSVoltage();
+  snapshot.charge_state = toPowerChargeState(M5.Power.isCharging());
+  const uint8_t power_source = readM5Pm1PowerSourceBits();
+  snapshot.power_source = static_cast<int8_t>(power_source);
+  snapshot.external_power = isExternalM5Pm1PowerSource(power_source);
+  snapshot.charge_enabled = true;
+  return snapshot;
+}
+
+void applyPowerSnapshot(const zero_buddy::power::PowerSnapshot& snapshot) {
+  g_power_snapshot = snapshot;
+  g_power_snapshot_valid = true;
+  g_screen.setPowerSnapshot(snapshot);
+}
+
+void logPowerSnapshot(const char* prefix,
+                      const zero_buddy::power::PowerSnapshot& snapshot) {
+  Serial.print(prefix);
+  Serial.print(" external=");
+  Serial.print(snapshot.external_power ? 1 : 0);
+  Serial.print(" charge=");
+  Serial.print(chargeStateName(snapshot.charge_state));
+  Serial.print(" batt=");
+  Serial.print(static_cast<int>(snapshot.battery_percent));
+  Serial.print("% batt_mv=");
+  Serial.print(static_cast<int>(snapshot.battery_mv));
+  Serial.print(" batt_ma=");
+  Serial.print(static_cast<int>(snapshot.battery_current_ma));
+  Serial.print(" vbus=");
+  Serial.print(static_cast<int>(snapshot.vbus_mv));
+  Serial.print(" src=");
+  Serial.print(m5pm1PowerSourceName(snapshot.power_source));
+  Serial.print(" charge_en=");
+  Serial.println(snapshot.charge_enabled ? 1 : 0);
+}
+
+bool refreshPowerSnapshot(bool force) {
+  const uint32_t now = millis();
+  if (!force && g_power_snapshot_valid &&
+      now - g_last_power_poll_ms < kPowerEventPollMs) {
+    return false;
+  }
+
+  const zero_buddy::power::PowerSnapshot next = readM5UnifiedPowerSnapshot();
+  const auto events = zero_buddy::power::detectPowerEvents(
+      g_power_snapshot_valid ? &g_power_snapshot : nullptr,
+      next);
+  const bool should_log =
+      !g_power_snapshot_valid ||
+      events.external_power_changed ||
+      events.charge_state_changed ||
+      events.battery_percent_changed ||
+      events.low_battery_changed;
+  applyPowerSnapshot(next);
+  g_last_power_poll_ms = now;
+
+  if (should_log) {
+    logPowerSnapshot(events.initialized ? "power init" : "power event", next);
+  }
+  return true;
+}
+
+void configureM5UnifiedPowerManagement() {
+  // StickS3/M5PM1 charge enable is supported by M5Unified. Current limiting is
+  // not exposed for this PMIC path, so leave the board default in place.
+  M5.Power.setBatteryCharge(true);
+  refreshPowerSnapshot(true);
+  Serial.print("power pmic=");
+  Serial.println(static_cast<int>(M5.Power.getType()));
 }
 
 void pollControls() {
   M5.update();
-  restartIfBtnBPressed();
+  handleBrightnessButton();
+  handleResetButton();
+  refreshPowerSnapshot(false);
 }
 
 void cancelCheckTimers() {
@@ -298,17 +472,8 @@ bool waitForBtnALongPress(uint32_t hold_ms) {
 }
 
 bool externalPowerConnected() {
-  const int16_t vbus_mv = M5.Power.getVBUSVoltage();
-  const auto charge_state = M5.Power.isCharging();
-  const bool connected = zero_buddy::externalPowerPresent(
-      vbus_mv, charge_state == m5::Power_Class::is_charging);
-  Serial.print("power external=");
-  Serial.print(connected ? 1 : 0);
-  Serial.print(" vbus=");
-  Serial.print(static_cast<int>(vbus_mv));
-  Serial.print(" charging=");
-  Serial.println(static_cast<int>(charge_state));
-  return connected;
+  refreshPowerSnapshot(true);
+  return g_power_snapshot.external_power;
 }
 
 const char* modeRunErrorName(ModeRunError error) {
@@ -587,6 +752,26 @@ bool writeRuntimeConfigString(const char* key, const String& value, size_t max_c
   return written == value.length();
 }
 
+uint8_t readRuntimeConfigUChar(const char* key, uint8_t default_value) {
+  Preferences prefs;
+  if (!prefs.begin(kRuntimeConfigNamespace, true)) {
+    return default_value;
+  }
+  const uint8_t value = prefs.getUChar(key, default_value);
+  prefs.end();
+  return value;
+}
+
+bool writeRuntimeConfigUChar(const char* key, uint8_t value) {
+  Preferences prefs;
+  if (!prefs.begin(kRuntimeConfigNamespace, false)) {
+    return false;
+  }
+  const size_t written = prefs.putUChar(key, value);
+  prefs.end();
+  return written == sizeof(value);
+}
+
 void removeRuntimeConfigKey(const char* key) {
   Preferences prefs;
   if (!prefs.begin(kRuntimeConfigNamespace, false)) {
@@ -643,6 +828,23 @@ bool saveRuntimeWifiConfig(const String& ssid, const String& password) {
 
 bool saveRuntimeAuthToken(const String& auth_token) {
   return writeRuntimeConfigString(kRuntimeAuthTokenKey, auth_token, kMaxAuthTokenChars);
+}
+
+uint8_t loadRuntimeBacklightStep() {
+  return zero_buddy::controls::normalizeBacklightStep(
+      readRuntimeConfigUChar(kRuntimeBacklightStepKey,
+                             zero_buddy::controls::kBacklightDefaultStep));
+}
+
+bool saveRuntimeBacklightStep(uint8_t step) {
+  return writeRuntimeConfigUChar(kRuntimeBacklightStepKey,
+                                 zero_buddy::controls::normalizeBacklightStep(step));
+}
+
+void restoreBacklightStep() {
+  g_backlight_step = loadRuntimeBacklightStep();
+  g_screen.setBacklightBrightness(
+      zero_buddy::controls::backlightBrightnessForStep(g_backlight_step));
 }
 
 void clearPersistentLastMessageCursor() {
@@ -730,6 +932,32 @@ void clearRuntimeConfig() {
   zero_buddy::state::clearLastMessageId(&g_state);
   zero_buddy::state::resetCheckDelay(&g_state);
   clear_assistant_message();
+}
+
+void handleResetButton() {
+  bool down = false;
+  if (!resetButtonDown(&down)) {
+    return;
+  }
+  const ResetButtonAction action =
+      zero_buddy::controls::updateResetButtonState(&g_reset_button_state,
+                                                   down,
+                                                   millis());
+  if (action == ResetButtonAction::None) {
+    return;
+  }
+  if (action == ResetButtonAction::ClearRuntimeConfigAndRestart) {
+    Serial.println("Reset button clear runtime config");
+    clearRuntimeConfig();
+    g_screen.render_screen_setup_status("runtime config", "cleared");
+    Serial.flush();
+    delay(800);
+    esp_restart();
+  }
+  Serial.println("Reset button restart");
+  Serial.flush();
+  delay(20);
+  esp_restart();
 }
 
 enum class ButtonPressIntent {
@@ -847,7 +1075,7 @@ bool httpGetWithToken(const String& url,
   }
   response_out->status_code = -1;
   response_out->body.remove(0);
-  restartIfBtnBPressed();
+  pollControls();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     return false;
   }
@@ -863,7 +1091,7 @@ bool httpGetWithToken(const String& url,
   http.addHeader("Accept", "application/json");
   const int code = http.GET();
   response_out->status_code = code;
-  restartIfBtnBPressed();
+  pollControls();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     http.end();
     return false;
@@ -887,7 +1115,7 @@ bool httpPostJsonRequest(const String& url,
   }
   response_out->status_code = -1;
   response_out->body.remove(0);
-  restartIfBtnBPressed();
+  pollControls();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     return false;
   }
@@ -909,7 +1137,7 @@ bool httpPostJsonRequest(const String& url,
   if (code > 0) {
     response_out->body = http.getString();
   }
-  restartIfBtnBPressed();
+  pollControls();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     http.end();
     return false;
@@ -932,7 +1160,7 @@ bool httpPostJsonAnyStatus(const String& url,
   }
   response_out->status_code = -1;
   response_out->body.remove(0);
-  restartIfBtnBPressed();
+  pollControls();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     return false;
   }
@@ -951,7 +1179,7 @@ bool httpPostJsonAnyStatus(const String& url,
   http.addHeader("Accept", "application/json");
   const int code = http.POST(body);
   response_out->status_code = code;
-  restartIfBtnBPressed();
+  pollControls();
   if (abort_detector != nullptr && abort_detector->shouldAbort()) {
     http.end();
     return false;
@@ -1029,7 +1257,7 @@ bool transcribePcmFile(const char* path, std::string* text_out) {
   http.addHeader("Accept", "application/json");
   const int code = http.sendRequest("POST", &file, pcm_size);
   file.close();
-  restartIfBtnBPressed();
+  pollControls();
   String response_body;
   if (code > 0) {
     response_body = http.getString();
@@ -1609,16 +1837,7 @@ bool ensureIdentityReady() {
   }
 }
 
-bool resetRuntimeConfigRequested() {
-  return buttonADown() && buttonBDown();
-}
-
 void runBootPreflight() {
-  if (resetRuntimeConfigRequested()) {
-    clearRuntimeConfig();
-    g_screen.render_screen_setup_status("runtime config", "cleared");
-    restartAwareDelay(1200);
-  }
   ensureWifiReady();
   ensureIdentityReady();
   stopBleProvisioning();
@@ -1728,8 +1947,8 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
 class HardwareDeepSleepOps : public DeepSleepOps {
  public:
   void configureRtcWake(uint32_t delay_ms) override {
+    rtc_delay_ms_ = delay_ms;
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(delay_ms) * 1000ULL);
   }
 
   void configureBtnAWake() override {
@@ -1746,18 +1965,20 @@ class HardwareDeepSleepOps : public DeepSleepOps {
     WiFi.mode(WIFI_OFF);
   }
 
-  bool isCharging() override {
-    charging_detected_ = externalPowerConnected();
-    return charging_detected_;
+  bool isExternalPowerPresent() override {
+    external_power_detected_ = externalPowerConnected();
+    return external_power_detected_;
   }
 
-  bool chargingDetected() const {
-    return charging_detected_;
+  bool externalPowerDetected() const {
+    return external_power_detected_;
   }
 
   void enterCpuHibernate() override {
     delay(20);
-    esp_deep_sleep_start();
+    // BtnA wake is configured explicitly; M5Unified handles display sleep,
+    // RTC timer wake, and the final ESP deep sleep entry.
+    M5.Power.deepSleep(static_cast<uint64_t>(rtc_delay_ms_) * 1000ULL, false);
   }
 
   void cancelRtcWake() override {
@@ -1765,7 +1986,8 @@ class HardwareDeepSleepOps : public DeepSleepOps {
   }
 
  private:
-  bool charging_detected_ = false;
+  uint32_t rtc_delay_ms_ = 0;
+  bool external_power_detected_ = false;
 };
 
 class HardwareReadOps : public ReadOps {
@@ -1855,6 +2077,7 @@ class HardwareReadOps : public ReadOps {
 
  private:
   void refreshBatteryLevel() {
+    refreshPowerSnapshot(true);
     g_screen.render_element_battery_level();
   }
 
@@ -1863,6 +2086,7 @@ class HardwareReadOps : public ReadOps {
   }
 
   void refreshBatteryLevelIfDue() {
+    refreshPowerSnapshot(false);
     g_screen.renderBatteryFollowupIfDue(millis());
   }
 };
@@ -1925,11 +2149,6 @@ class HardwareRecordingOps : public RecordingOps {
     g_screen.render_screen_recording_active();
     beepMicOn();
     auto mic_cfg = M5.Mic.config();
-    mic_cfg.pin_mck = GPIO_NUM_18;
-    mic_cfg.pin_bck = GPIO_NUM_17;
-    mic_cfg.pin_ws = GPIO_NUM_15;
-    mic_cfg.pin_data_in = GPIO_NUM_16;
-    mic_cfg.i2s_port = I2S_NUM_1;
     mic_cfg.sample_rate = kSampleRate;
     mic_cfg.over_sampling = 1;
     mic_cfg.magnification = 16;
@@ -2172,7 +2391,7 @@ void enterDeepSleep() {
     HardwareDeepSleepOps ops;
     DeepSleepMode mode(&g_state, &ops);
     const auto result = mode.main();
-    if (result.status == ModeRunStatus::Completed && ops.chargingDetected()) {
+    if (result.status == ModeRunStatus::Completed && ops.externalPowerDetected()) {
       cancelCheckTimers();
       runPluggedReadCheckLoop();
       continue;
@@ -2275,14 +2494,13 @@ void setup() {
   cfg.internal_spk = true;
   cfg.internal_mic = true;
   M5.begin(cfg);
-
-  pinMode(static_cast<int>(kBtnAWakePin), INPUT);
-  pinMode(static_cast<int>(kBtnBPin), INPUT);
-  g_btn_b_was_down = buttonBDown();
-  g_btn_b_interrupt_pending = false;
-  attachInterrupt(digitalPinToInterrupt(static_cast<int>(kBtnBPin)),
-                  handleBtnBFallingInterrupt,
-                  FALLING);
+  const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
+  if (wake_cause == ESP_SLEEP_WAKEUP_TIMER) {
+    g_screen.screenOff();
+  }
+  M5.update();
+  configureResetButtonPmic();
+  configureM5UnifiedPowerManagement();
   const bool had_rtc_state = g_rtc_magic == kRtcMagic && stateLooksValid(g_state);
   const auto previous_mode =
       had_rtc_state ? g_state.currentMode : zero_buddy::state::Mode::DeepSleep;
@@ -2290,10 +2508,10 @@ void setup() {
   setCpu(kRecordingCpuMhz);
   LittleFS.begin(true);
   ensureGlobalStateInitialized();
+  restoreBacklightStep();
   restorePersistentLastMessageCursor();
   zero_buddy::state::setHasAssistantMessage(&g_state, assistant_message_exists());
 
-  const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
   const uint64_t ext1_wake_mask =
       wake_cause == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;
   const bool btn_a_wake =

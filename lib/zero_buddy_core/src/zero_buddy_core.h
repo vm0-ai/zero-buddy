@@ -77,9 +77,6 @@ std::string buildAssistantQueueManifest(size_t count,
                                         std::string last_seen_message_id,
                                         size_t scroll_top = 0);
 AssistantQueueManifest parseAssistantQueueManifest(std::string body, size_t max_count);
-bool externalPowerPresent(int32_t vbus_mv,
-                          bool battery_charging,
-                          int32_t present_threshold_mv = 4300);
 BootRepairAction repairActionForBootFailure(BootRepairEvent event);
 const char* provisioningStateName(ProvisioningState state);
 const char* provisioningErrorCodeName(ProvisioningError error);

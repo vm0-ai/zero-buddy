@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 
+#include "zero_buddy_power.h"
 #include "zero_buddy_state.h"
 
 namespace zero_buddy {
@@ -19,6 +20,9 @@ class ScreenRenderer {
 
   void screenOn();
   void screenOff();
+  void setBacklightBrightness(uint8_t brightness);
+  uint8_t backlightBrightness() const;
+  void setPowerSnapshot(const power::PowerSnapshot& snapshot);
 
   void render_screen_boot();
   void render_screen_read_empty();
@@ -67,6 +71,8 @@ class ScreenRenderer {
  private:
   struct LocalState {
     uint8_t battery_bars = 0xFF;
+    int16_t battery_percent = -2;
+    bool battery_percent_mode = false;
     bool battery_visible = false;
     bool checking_indicator_visible = false;
     bool battery_followup_refresh_scheduled = false;
@@ -190,6 +196,8 @@ class ScreenRenderer {
   uint16_t avatarBackgroundColor() const;
   uint16_t dialogueBorderColor() const;
   uint16_t avatarColor(uint8_t row, int col) const;
+  bool batteryPercentMode() const;
+  int16_t batteryLevelPercent() const;
   uint8_t batteryLevelBars() const;
   uint8_t batteryLevelBarsFor(int32_t level) const;
   size_t readBodyTop() const;
@@ -206,7 +214,11 @@ class ScreenRenderer {
 
   state::GlobalState* shared_state_;
   state::RenderScreenState fallback_render_state_;
+  power::PowerSnapshot power_snapshot_;
+  bool power_snapshot_valid_ = false;
+  bool screen_on_ = false;
   LocalState local_;
+  uint8_t backlight_brightness_ = 96;
 };
 
 }  // namespace screen

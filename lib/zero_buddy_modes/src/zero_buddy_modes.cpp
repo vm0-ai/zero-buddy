@@ -134,11 +134,11 @@ ModeRunResult DeepSleepMode::main() {
     return abortedResult();
   }
 
-  const bool charging = ops_->isCharging();
+  const bool external_power = ops_->isExternalPowerPresent();
   if (shouldStop()) {
     return abortedResult();
   }
-  if (charging) {
+  if (external_power) {
     return completed();
   }
 

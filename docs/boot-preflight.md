@@ -12,6 +12,7 @@ Runtime configuration is stored in NVS namespace `zero_runtime`.
 - `wifi_password`
 - `auth_token`
 - `thread_id`
+- `backlight`
 
 Wi-Fi, Zero auth, Zero thread, and transcription auth are not compile-time
 values. Speech transcription uses the runtime `auth_token` as a PAT.
@@ -32,9 +33,23 @@ normal `Read` mode directly.
 
 ## Reset
 
-If BtnA is held while BtnB is pressed, the firmware clears the full
-`zero_runtime` NVS namespace and restarts. Holding BtnA + BtnB through boot
-performs the same reset before continuing through the same preflight checks.
+The side Reset / PWR button is read through the official `M5PM1` driver rather
+than raw PMIC registers or an ESP GPIO. A short press restarts the firmware.
+Holding it for 2 seconds clears the full `zero_runtime` NVS namespace and
+restarts before continuing through the same preflight checks.
+
+## Power
+
+Boot configures the board through M5Unified power APIs. Battery charging is
+enabled with `M5.Power.setBatteryCharge(true)`, and the first battery/VBUS/
+charging snapshot is sampled immediately after `M5.begin()`. Later UI and mode
+logic consume this cached snapshot rather than querying the PMIC from multiple
+places. External power detection is based on the official `M5PM1`
+`getPowerSource()` source bits.
+
+The firmware keeps its custom RTC + BtnA wake setup, then enters deep sleep via
+`M5.Power.deepSleep(..., false)` so M5Unified handles the display sleep and final
+ESP deep-sleep call without overriding the app wake sources.
 
 ## Network Stage
 

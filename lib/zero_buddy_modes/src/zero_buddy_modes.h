@@ -79,7 +79,7 @@ class DeepSleepOps {
   virtual void configureBtnAWake() = 0;
   virtual void screenOff() = 0;
   virtual void disconnectWifi() = 0;
-  virtual bool isCharging() = 0;
+  virtual bool isExternalPowerPresent() = 0;
   virtual void enterCpuHibernate() = 0;
 
   virtual void cancelRtcWake() = 0;

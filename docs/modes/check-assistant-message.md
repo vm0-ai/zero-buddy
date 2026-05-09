@@ -88,7 +88,7 @@ Typical trigger:
 - Delete or ignore temporary files created by an incomplete poll.
 - Avoid publishing partially written assistant queue metadata.
 - Avoid setting `hasAssistantMessage` unless the corresponding message files are fully written.
-- Avoid advancing `lastMessageId` unless the poll result has been fully accepted.
+- Avoid advancing or persisting `lastMessageId` unless the poll result has been fully accepted.
 - Avoid updating `checkDelayMs` from a partial or aborted check.
 - Leave the mode in a state where another mode can be entered immediately.
 - Be idempotent: repeated calls must be safe.
@@ -117,6 +117,7 @@ Recommended order:
 5. Update `hasAssistantMessage`.
 6. Update `lastMessageId`.
 7. Update `checkDelayMs`.
+8. Persist the new `lastMessageId` for the current thread if the cursor changed.
 
 If `abort` is requested before the commit boundary finishes, cleanup should remove temporary files and keep the previous global state.
 

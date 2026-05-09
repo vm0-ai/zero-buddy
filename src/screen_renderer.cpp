@@ -529,8 +529,8 @@ void ScreenRenderer::render_screen_recording_wifi() {
 
 void ScreenRenderer::render_screen_recording_transcribing() {
   render_avatar_layout_status(state::RenderScreenKind::RecordingTranscribing,
-                              "thinking",
-                              "speech to text...");
+                              "I got you",
+                              "one sec...");
 }
 
 void ScreenRenderer::render_screen_recording_sending(const std::string& user_text) {
@@ -618,6 +618,10 @@ void ScreenRenderer::render_element_battery_level() {
       M5.Display.drawRect(bar_x, bar_y, kBarWidth, kBatteryBodyHeight - 4, fg);
     }
   }
+
+  // Redraw the outer frame last so the terminal and inner bars never nick the
+  // bottom-right outline on the tiny icon.
+  M5.Display.drawRect(x, y, kBatteryBodyWidth, kBatteryBodyHeight, fg);
 }
 
 void ScreenRenderer::render_element_zero_avatar(int x,
@@ -793,7 +797,7 @@ void ScreenRenderer::render_element_preview_text(const char* title,
   M5.Display.setClipRect(text_x, text_y, text_w, text_h);
   M5.Display.setTextColor(border, TFT_WHITE);
   M5.Display.setFont(&fonts::efontCN_16);
-  renderWrappedChatText(body, text_x, text_y, text_w, 0);
+  renderWrappedChatText(body, text_x, text_y, text_w, text_h, 0);
   M5.Display.clearClipRect();
   M5.Display.setTextWrap(false);
 }
@@ -821,6 +825,7 @@ void ScreenRenderer::render_element_chat_message(const std::string& message,
   const uint16_t bg = avatarBackgroundColor();
   const uint16_t fg = dialogueBorderColor();
   const ReadLayout layout = readLayout();
+  M5.Display.startWrite();
   M5.Display.fillRect(layout.body.x, layout.body.y, layout.body.w, layout.body.h, bg);
   M5.Display.setClipRect(layout.body.x, layout.body.y, layout.body.w, layout.body.h);
   M5.Display.setTextColor(fg, bg);
@@ -829,24 +834,35 @@ void ScreenRenderer::render_element_chat_message(const std::string& message,
                         layout.body.x,
                         layout.body.y,
                         layout.body.w,
+                        layout.body.h,
                         scroll_top);
   M5.Display.clearClipRect();
   M5.Display.setTextWrap(false);
+  M5.Display.endWrite();
 }
 
 void ScreenRenderer::render_element_next_page_arrow() {
   const ReadLayout layout = readLayout();
+  const uint16_t bg = avatarBackgroundColor();
+  const uint16_t fg = dialogueBorderColor();
   const int right = layout.body.x + layout.body.w - 1;
   const int bottom = layout.screen.h - kReadPaddingBottom - 1;
   const int cx = right - 6;
   const int cy = bottom - 5;
+  constexpr int kArrowMaskWidth = 18;
+  constexpr int kArrowMaskHeight = 16;
+  M5.Display.fillRect(std::max(layout.body.x, right - kArrowMaskWidth + 1),
+                      std::max(layout.body.y, bottom - kArrowMaskHeight + 1),
+                      kArrowMaskWidth,
+                      kArrowMaskHeight,
+                      bg);
   M5.Display.fillTriangle(cx - 5,
                           cy - 2,
                           cx + 5,
                           cy - 2,
                           cx,
                           cy + 5,
-                          dialogueBorderColor());
+                          fg);
 }
 
 void ScreenRenderer::scheduleBatteryFollowupRefresh(uint32_t now_ms,
@@ -1349,15 +1365,21 @@ void ScreenRenderer::renderWrappedChatText(const std::string& text,
                                            int x,
                                            int y,
                                            int width_px,
+                                           int height_px,
                                            size_t scroll_top) {
   const int line_height = static_cast<int>(kReadLineHeight);
+  const int bottom = y + std::max(1, height_px);
   int line_y = y - static_cast<int>(scroll_top);
   size_t line_width = 0;
   std::vector<ChatGlyph> line;
   M5.Display.setTextWrap(false);
 
+  auto lineVisible = [&]() {
+    return line_y + line_height > y && line_y < bottom;
+  };
+
   auto flush_line = [&]() {
-    if (!line.empty()) {
+    if (!line.empty() && lineVisible()) {
       int cursor_x = x;
       for (const ChatGlyph& glyph : line) {
         M5.Display.setFont(glyph.font);
@@ -1365,16 +1387,23 @@ void ScreenRenderer::renderWrappedChatText(const std::string& text,
         M5.Display.print(glyph.text.c_str());
         cursor_x += static_cast<int>(glyph.width);
       }
-      line.clear();
     }
+    line.clear();
     line_width = 0;
     line_y += line_height;
+    return line_y < bottom;
   };
 
   for (size_t i = 0; i < text.size();) {
+    if (line_y >= bottom) {
+      break;
+    }
+
     if (text[i] == '\n') {
       ++i;
-      flush_line();
+      if (!flush_line()) {
+        break;
+      }
       continue;
     }
 
@@ -1382,9 +1411,13 @@ void ScreenRenderer::renderWrappedChatText(const std::string& text,
     const size_t glyph_width = glyph.width;
     if (line_width > 0 &&
         line_width + glyph_width > static_cast<size_t>(std::max(1, width_px))) {
-      flush_line();
+      if (!flush_line()) {
+        break;
+      }
     }
-    line.push_back(glyph);
+    if (lineVisible()) {
+      line.push_back(glyph);
+    }
     line_width += glyph_width;
   }
 
@@ -1396,6 +1429,14 @@ size_t ScreenRenderer::estimateWrappedTextHeight(const std::string& text,
   if (width_px == 0 || text.empty()) {
     return kReadLineHeight;
   }
+  const uint32_t text_hash = hashText(text.c_str());
+  if (local_.wrapped_text_height_cache_valid &&
+      local_.wrapped_text_height_cache_hash == text_hash &&
+      local_.wrapped_text_height_cache_size == text.size() &&
+      local_.wrapped_text_height_cache_width == width_px) {
+    return local_.wrapped_text_height_cache_value;
+  }
+
   size_t lines = 1;
   size_t line_width = 0;
   for (size_t i = 0; i < text.size();) {
@@ -1413,7 +1454,13 @@ size_t ScreenRenderer::estimateWrappedTextHeight(const std::string& text,
       line_width += glyph_width;
     }
   }
-  return lines * kReadLineHeight;
+  const size_t height = lines * kReadLineHeight;
+  local_.wrapped_text_height_cache_valid = true;
+  local_.wrapped_text_height_cache_hash = text_hash;
+  local_.wrapped_text_height_cache_size = text.size();
+  local_.wrapped_text_height_cache_width = width_px;
+  local_.wrapped_text_height_cache_value = height;
+  return height;
 }
 
 size_t ScreenRenderer::utf8DisplayWidthPx(const std::string& text, size_t* offset) const {

@@ -66,6 +66,10 @@ std::string trim(std::string value);
 std::string extractJsonString(std::string body, std::string key);
 std::string preprocessAssistantForDisplay(std::string text);
 ZeroMessagesResult parseZeroMessagesResponse(std::string body);
+std::string selectPersistentLastMessageId(std::string current_thread_id,
+                                          std::string stored_thread_id,
+                                          std::string stored_message_id,
+                                          size_t max_message_id_bytes);
 std::string buildAssistantQueueManifest(size_t count,
                                         size_t index,
                                         bool waiting,

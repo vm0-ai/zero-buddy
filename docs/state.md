@@ -166,7 +166,12 @@ Some global state is also persisted because the device spends most of its time i
   - `wifi_password`
   - `auth_token`
   - `thread_id`
-  - These are runtime provisioning values, not compile-time firmware constants.
+  - `last_msg_id`
+  - `last_msg_thr`
+  - Runtime provisioning values are not compile-time firmware constants.
+  - `last_msg_id` is restored only when `last_msg_thr` matches the effective
+    current thread id, so switching or reprovisioning a thread does not reuse an
+    old cursor.
 
 Wi-Fi provisioning status is split between BLE advertising and GATT:
 

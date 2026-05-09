@@ -461,6 +461,20 @@ ZeroMessagesResult parseZeroMessagesResponse(std::string body) {
   return result;
 }
 
+std::string selectPersistentLastMessageId(std::string current_thread_id,
+                                          std::string stored_thread_id,
+                                          std::string stored_message_id,
+                                          size_t max_message_id_bytes) {
+  if (current_thread_id.empty() || stored_thread_id != current_thread_id ||
+      stored_message_id.empty()) {
+    return "";
+  }
+  if (max_message_id_bytes == 0 || stored_message_id.size() >= max_message_id_bytes) {
+    return "";
+  }
+  return stored_message_id;
+}
+
 std::string buildAssistantQueueManifest(size_t count,
                                         size_t index,
                                         bool waiting,

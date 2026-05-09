@@ -95,6 +95,30 @@ void test_assistant_queue_manifest_round_trip() {
                         .ok);
 }
 
+void test_persistent_cursor_selects_only_matching_thread() {
+  TEST_ASSERT_EQUAL_STRING(
+      "msg-1",
+      zero_buddy::selectPersistentLastMessageId("thread-1", "thread-1", "msg-1", 160)
+          .c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "",
+      zero_buddy::selectPersistentLastMessageId("thread-2", "thread-1", "msg-1", 160)
+          .c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "",
+      zero_buddy::selectPersistentLastMessageId("", "thread-1", "msg-1", 160)
+          .c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "",
+      zero_buddy::selectPersistentLastMessageId("thread-1", "thread-1", "", 160)
+          .c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "",
+      zero_buddy::selectPersistentLastMessageId("thread-1", "thread-1",
+                                                std::string(160, 'm'), 160)
+          .c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -104,5 +128,6 @@ int main() {
   RUN_TEST(test_boot_repair_actions);
   RUN_TEST(test_provisioning_service_data_encoding);
   RUN_TEST(test_assistant_queue_manifest_round_trip);
+  RUN_TEST(test_persistent_cursor_selects_only_matching_thread);
   return UNITY_END();
 }

@@ -45,6 +45,7 @@ struct FakeCheckOps : CheckAssistantMessageOps {
   bool wifi_ok = true;
   bool poll_ok = true;
   bool append_ok = true;
+  bool persist_ok = true;
   AssistantCheckResult poll_result;
   std::function<void()> on_cpu;
   std::function<void()> on_wifi;
@@ -84,6 +85,11 @@ struct FakeCheckOps : CheckAssistantMessageOps {
       on_write();
     }
     return append_ok;
+  }
+
+  bool persistLastMessageId(const std::string& message_id) override {
+    calls.push_back("persist:" + message_id);
+    return persist_ok;
   }
 
   void cancelNetwork() override {
@@ -279,6 +285,7 @@ struct FakeRecordingOps : RecordingOps {
   bool wifi_ok = true;
   bool asr_ok = true;
   bool send_ok = true;
+  bool persist_ok = true;
   std::string asr_text = "hello";
   std::string sent_message_id = "user-2";
   std::function<void()> on_screen;
@@ -361,6 +368,11 @@ struct FakeRecordingOps : RecordingOps {
     return send_ok;
   }
 
+  bool persistLastMessageId(const std::string& message_id) override {
+    calls.push_back("persist:" + message_id);
+    return persist_ok;
+  }
+
   void stopVoiceRecording() override {
     calls.push_back("stop-recording");
   }
@@ -394,7 +406,8 @@ void test_check_assistant_main_commits_new_messages() {
   CheckAssistantMessageMode mode(&state, &ops);
   assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
 
-  TEST_ASSERT_EQUAL_STRING("cpu-network,wifi,poll:user-1,append-assistant-message",
+  TEST_ASSERT_EQUAL_STRING("cpu-network,wifi,poll:user-1,append-assistant-message,"
+                           "persist:assistant-2",
                            joinCalls(ops.calls).c_str());
   TEST_ASSERT_EQUAL_STRING("assistant-2", zero_buddy::state::copyLastMessageId(state).c_str());
   TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
@@ -427,7 +440,8 @@ void test_check_assistant_preserves_existing_message_presence() {
   CheckAssistantMessageMode mode(&state, &ops);
   assertResult(ModeRunStatus::Completed, ModeRunError::None, mode.main());
 
-  TEST_ASSERT_EQUAL_STRING("cpu-network,wifi,poll:assistant-1,append-assistant-message",
+  TEST_ASSERT_EQUAL_STRING("cpu-network,wifi,poll:assistant-1,append-assistant-message,"
+                           "persist:assistant-3",
                            joinCalls(ops.calls).c_str());
   TEST_ASSERT_EQUAL_STRING("assistant-3", zero_buddy::state::copyLastMessageId(state).c_str());
   TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
@@ -470,6 +484,27 @@ void test_check_assistant_storage_failure_does_not_commit_cursor_or_queue() {
   TEST_ASSERT_EQUAL_STRING("old", zero_buddy::state::copyLastMessageId(state).c_str());
   TEST_ASSERT_FALSE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT32(120UL * 1000UL, state.checkDelayMs);
+}
+
+void test_check_assistant_persist_failure_is_reported_after_commit() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+  zero_buddy::state::setLastMessageId(&state, "old");
+
+  FakeCheckOps ops;
+  ops.persist_ok = false;
+  ops.poll_result.hasNewAssistantMessages = true;
+  ops.poll_result.assistantMessages = {"assistant"};
+  ops.poll_result.newestMessageId = "assistant-1";
+
+  CheckAssistantMessageMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Failed,
+               ModeRunError::LastMessageIdPersistFailed,
+               mode.main());
+
+  TEST_ASSERT_EQUAL_STRING("cpu-network,wifi,poll:old,append-assistant-message,"
+                           "persist:assistant-1",
+                           joinCalls(ops.calls).c_str());
+  TEST_ASSERT_EQUAL_STRING("assistant-1", zero_buddy::state::copyLastMessageId(state).c_str());
 }
 
 void test_check_assistant_abort_during_poll_cleans_without_commit() {
@@ -707,7 +742,7 @@ void test_recording_main_sends_message_and_commits_cursor() {
 
   TEST_ASSERT_EQUAL_STRING(
       "screen-on,cpu-recording,cancel-rtc,clear-assistant-message,record-voice,wifi,"
-      "voice-to-text,delete-voice,send:turn on the light",
+      "voice-to-text,delete-voice,send:turn on the light,persist:user-2",
       joinCalls(ops.calls).c_str());
   TEST_ASSERT_EQUAL_STRING("user-2", zero_buddy::state::copyLastMessageId(state).c_str());
   TEST_ASSERT_EQUAL_UINT32(zero_buddy::state::kInitialCheckDelayMs, state.checkDelayMs);
@@ -750,6 +785,26 @@ void test_recording_send_failure_does_not_commit_cursor() {
   TEST_ASSERT_EQUAL_STRING(
       "screen-on,cpu-recording,cancel-rtc,clear-assistant-message,record-voice,wifi,"
       "voice-to-text,delete-voice,send:hello",
+      joinCalls(ops.calls).c_str());
+}
+
+void test_recording_persist_failure_is_reported_after_send_commit() {
+  auto state = zero_buddy::state::makeDefaultGlobalState();
+  zero_buddy::state::setLastMessageId(&state, "old");
+
+  FakeRecordingOps ops;
+  ops.persist_ok = false;
+  ops.sent_message_id = "user-3";
+
+  RecordingMode mode(&state, &ops);
+  assertResult(ModeRunStatus::Failed,
+               ModeRunError::LastMessageIdPersistFailed,
+               mode.main());
+
+  TEST_ASSERT_EQUAL_STRING("user-3", zero_buddy::state::copyLastMessageId(state).c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "screen-on,cpu-recording,cancel-rtc,clear-assistant-message,record-voice,wifi,"
+      "voice-to-text,delete-voice,send:hello,persist:user-3",
       joinCalls(ops.calls).c_str());
 }
 
@@ -799,6 +854,7 @@ int main() {
   RUN_TEST(test_check_assistant_preserves_existing_message_presence);
   RUN_TEST(test_check_assistant_main_without_new_messages_advances_backoff);
   RUN_TEST(test_check_assistant_storage_failure_does_not_commit_cursor_or_queue);
+  RUN_TEST(test_check_assistant_persist_failure_is_reported_after_commit);
   RUN_TEST(test_check_assistant_abort_during_poll_cleans_without_commit);
   RUN_TEST(test_deep_sleep_main_runs_hibernate_last);
   RUN_TEST(test_deep_sleep_main_never_changes_led);
@@ -814,6 +870,7 @@ int main() {
   RUN_TEST(test_recording_main_sends_message_and_commits_cursor);
   RUN_TEST(test_recording_voice_to_text_failure_deletes_voice_without_cursor_commit);
   RUN_TEST(test_recording_send_failure_does_not_commit_cursor);
+  RUN_TEST(test_recording_persist_failure_is_reported_after_send_commit);
   RUN_TEST(test_recording_abort_during_record_cleans_owned_resources);
   RUN_TEST(test_recording_invalid_returned_message_id_fails_without_mutating_cursor);
   return UNITY_END();

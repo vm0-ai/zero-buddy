@@ -83,6 +83,10 @@ ModeRunResult CheckAssistantMessageMode::main() {
     ops_->cleanupTempFiles();
     return failed(ModeRunError::InvalidStateCommit);
   }
+  const std::string committed_id = state::copyLastMessageId(*state_);
+  if (committed_id != since_id && !ops_->persistLastMessageId(committed_id)) {
+    return failed(ModeRunError::LastMessageIdPersistFailed);
+  }
   return completed();
 }
 
@@ -428,9 +432,14 @@ ModeRunResult RecordingMode::main() {
   }
 
   // Commit immediately after the send is accepted. There is intentionally no
-  // abort checkpoint between send success and cursor/backoff update.
+  // abort checkpoint between send success and durable cursor/backoff update.
+  const std::string previous_message_id = state::copyLastMessageId(*state_);
   if (!state::commitRecordingMessageSent(state_, user_message_id)) {
     return failed(ModeRunError::InvalidStateCommit);
+  }
+  if (previous_message_id != user_message_id &&
+      !ops_->persistLastMessageId(user_message_id)) {
+    return failed(ModeRunError::LastMessageIdPersistFailed);
   }
   return completed();
 }

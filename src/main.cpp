@@ -79,7 +79,7 @@ constexpr uint32_t kBootSplashMs = 3000;
 constexpr uint32_t kWifiConnectAttemptMs = 12000;
 constexpr uint8_t kRecordingCpuMhz = 240;
 constexpr uint8_t kNetworkCpuMhz = 80;
-constexpr uint8_t kReadCpuMhz = 80;
+constexpr uint8_t kReadCpuMhz = 160;
 constexpr size_t kMaxAssistantMessages = 5;
 constexpr size_t kMaxAssistantMessageBytes = 4096;
 
@@ -98,10 +98,13 @@ constexpr char kRuntimeWifiSsidKey[] = "wifi_ssid";
 constexpr char kRuntimeWifiPasswordKey[] = "wifi_password";
 constexpr char kRuntimeAuthTokenKey[] = "auth_token";
 constexpr char kRuntimeThreadIdKey[] = "thread_id";
+constexpr char kRuntimeLastMessageIdKey[] = "last_msg_id";
+constexpr char kRuntimeLastMessageThreadIdKey[] = "last_msg_thr";
 constexpr size_t kMaxWifiSsidChars = 64;
 constexpr size_t kMaxWifiPasswordChars = 128;
 constexpr size_t kMaxAuthTokenChars = 768;
 constexpr size_t kMaxThreadIdChars = 96;
+constexpr size_t kMaxLastMessageIdChars = zero_buddy::state::kLastMessageIdBytes - 1;
 constexpr size_t kMaxPollTokenChars = 512;
 constexpr uint32_t kProvisioningConnectAttemptMs = 20000;
 constexpr char kBb0BleServiceUuid[] = "bb000001-8f16-4b2a-9bb0-000000000001";
@@ -320,6 +323,8 @@ const char* modeRunErrorName(ModeRunError error) {
       return "assistant-storage";
     case ModeRunError::InvalidStateCommit:
       return "invalid-state";
+    case ModeRunError::LastMessageIdPersistFailed:
+      return "cursor-persist";
     case ModeRunError::AssistantClearFailed:
       return "assistant-clear";
     case ModeRunError::VoiceCaptureFailed:
@@ -640,12 +645,72 @@ bool saveRuntimeAuthToken(const String& auth_token) {
   return writeRuntimeConfigString(kRuntimeAuthTokenKey, auth_token, kMaxAuthTokenChars);
 }
 
+void clearPersistentLastMessageCursor() {
+  removeRuntimeConfigKey(kRuntimeLastMessageIdKey);
+  removeRuntimeConfigKey(kRuntimeLastMessageThreadIdKey);
+}
+
+bool persistLastMessageCursorForCurrentThread(const std::string& message_id) {
+  if (message_id.empty() || message_id.size() >= zero_buddy::state::kLastMessageIdBytes) {
+    return false;
+  }
+  const RuntimeConfig config = loadRuntimeConfig();
+  if (!config.hasThreadId()) {
+    return false;
+  }
+  if (!writeRuntimeConfigString(kRuntimeLastMessageIdKey,
+                                String(message_id.c_str()),
+                                kMaxLastMessageIdChars)) {
+    return false;
+  }
+  if (!writeRuntimeConfigString(kRuntimeLastMessageThreadIdKey,
+                                config.thread_id,
+                                kMaxThreadIdChars)) {
+    removeRuntimeConfigKey(kRuntimeLastMessageIdKey);
+    return false;
+  }
+  return true;
+}
+
+std::string loadPersistentLastMessageCursorForCurrentThread() {
+  const RuntimeConfig config = loadRuntimeConfig();
+  if (!config.hasThreadId()) {
+    return "";
+  }
+  const String stored_thread =
+      readRuntimeConfigString(kRuntimeLastMessageThreadIdKey, kMaxThreadIdChars);
+  const String stored_message =
+      readRuntimeConfigString(kRuntimeLastMessageIdKey, kMaxLastMessageIdChars);
+  return zero_buddy::selectPersistentLastMessageId(
+      std::string(config.thread_id.c_str()),
+      std::string(stored_thread.c_str()),
+      std::string(stored_message.c_str()),
+      zero_buddy::state::kLastMessageIdBytes);
+}
+
+void restorePersistentLastMessageCursor() {
+  if (zero_buddy::state::hasLastMessageId(g_state)) {
+    return;
+  }
+  const std::string restored = loadPersistentLastMessageCursorForCurrentThread();
+  if (!restored.empty()) {
+    zero_buddy::state::setLastMessageId(&g_state, restored);
+  }
+}
+
 bool saveRuntimeThreadId(const String& thread_id) {
-  return writeRuntimeConfigString(kRuntimeThreadIdKey, thread_id, kMaxThreadIdChars);
+  const bool saved = writeRuntimeConfigString(kRuntimeThreadIdKey,
+                                              thread_id,
+                                              kMaxThreadIdChars);
+  if (saved) {
+    clearPersistentLastMessageCursor();
+  }
+  return saved;
 }
 
 void clearRuntimeThreadId() {
   removeRuntimeConfigKey(kRuntimeThreadIdKey);
+  clearPersistentLastMessageCursor();
   zero_buddy::state::clearLastMessageId(&g_state);
   clear_assistant_message();
 }
@@ -661,6 +726,7 @@ void clearRuntimeConfig() {
     prefs.clear();
     prefs.end();
   }
+  clearPersistentLastMessageCursor();
   zero_buddy::state::clearLastMessageId(&g_state);
   zero_buddy::state::resetCheckDelay(&g_state);
   clear_assistant_message();
@@ -1479,6 +1545,7 @@ BootHttpOutcome createRuntimeThreadFromInitMessage(const RuntimeConfig& config) 
   }
   if (message_id.length() > 0) {
     zero_buddy::state::setLastMessageId(&g_state, std::string(message_id.c_str()));
+    persistLastMessageCursorForCurrentThread(std::string(message_id.c_str()));
   }
   zero_buddy::state::resetCheckDelay(&g_state);
   clear_assistant_message();
@@ -1623,6 +1690,10 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
       }
     }
     return true;
+  }
+
+  bool persistLastMessageId(const std::string& message_id) override {
+    return persistLastMessageCursorForCurrentThread(message_id);
   }
 
   void cancelNetwork() override {
@@ -2025,6 +2096,10 @@ class HardwareRecordingOps : public RecordingOps {
     return true;
   }
 
+  bool persistLastMessageId(const std::string& message_id) override {
+    return persistLastMessageCursorForCurrentThread(message_id);
+  }
+
   void stopVoiceRecording() override {
     M5.Mic.end();
   }
@@ -2215,6 +2290,7 @@ void setup() {
   setCpu(kRecordingCpuMhz);
   LittleFS.begin(true);
   ensureGlobalStateInitialized();
+  restorePersistentLastMessageCursor();
   zero_buddy::state::setHasAssistantMessage(&g_state, assistant_message_exists());
 
   const esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();

@@ -71,6 +71,11 @@ class ScreenRenderer {
     bool checking_indicator_visible = false;
     bool battery_followup_refresh_scheduled = false;
     uint32_t battery_followup_due_ms = 0;
+    mutable bool wrapped_text_height_cache_valid = false;
+    mutable uint32_t wrapped_text_height_cache_hash = 0;
+    mutable size_t wrapped_text_height_cache_size = 0;
+    mutable size_t wrapped_text_height_cache_width = 0;
+    mutable size_t wrapped_text_height_cache_value = 0;
   };
 
   struct Rect {
@@ -193,6 +198,7 @@ class ScreenRenderer {
                              int x,
                              int y,
                              int width_px,
+                             int height_px,
                              size_t scroll_top);
   size_t estimateWrappedTextHeight(const std::string& text, size_t width_px) const;
   size_t utf8DisplayWidthPx(const std::string& text, size_t* offset) const;

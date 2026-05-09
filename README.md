@@ -170,6 +170,8 @@ pio device monitor -e m5stick-c
   - temporary raw PCM recording file
 - NVS:
   - runtime Wi-Fi, auth token, and thread id
+  - `lastMessageId` cursor bound to the current thread id, so cold restarts can
+    continue assistant polling without re-sending a voice message
 
 `lastRenderScreenState` is only a screen renderer cache. Business modes must not
 read it for state transitions.

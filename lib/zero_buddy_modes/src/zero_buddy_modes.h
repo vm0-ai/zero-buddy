@@ -21,6 +21,7 @@ enum class ModeRunError {
   AssistantPollFailed,
   AssistantStorageFailed,
   InvalidStateCommit,
+  LastMessageIdPersistFailed,
   AssistantClearFailed,
   VoiceCaptureFailed,
   VoiceToTextFailed,
@@ -41,6 +42,7 @@ class CheckAssistantMessageOps {
   virtual bool pollAssistantMessages(const std::string& since_id,
                                      state::AssistantCheckResult* result_out) = 0;
   virtual bool appendAssistantMessages(const state::AssistantCheckResult& result) = 0;
+  virtual bool persistLastMessageId(const std::string& message_id) = 0;
 
   virtual void cancelNetwork() = 0;
   virtual void closeFiles() = 0;
@@ -179,6 +181,7 @@ class RecordingOps {
   virtual bool voiceToText(std::string* text_out) = 0;
   virtual void deleteVoiceFile() = 0;
   virtual bool sendTextMessage(const std::string& text, std::string* user_message_id_out) = 0;
+  virtual bool persistLastMessageId(const std::string& message_id) = 0;
 
   virtual void stopVoiceRecording() = 0;
   virtual void cancelVoiceToText() = 0;

@@ -156,6 +156,7 @@ Before the send is accepted:
 After the send is accepted:
 
 - `lastMessageId` is updated to the returned user `messageId`.
+- the new `lastMessageId` is persisted for the current thread.
 - `checkDelayMs` is reset to 30 seconds.
 - the voice file must already be deleted or scheduled for deletion.
 

@@ -63,6 +63,7 @@ class ScreenRenderer {
   void scheduleBatteryFollowupRefresh(uint32_t now_ms,
                                       uint32_t delay_ms = kBatteryFollowupRefreshMs);
   void renderBatteryFollowupIfDue(uint32_t now_ms);
+  void tickAvatarAnimation(uint32_t now_ms);
 
   size_t maxScrollTopForMessage(const std::string& message) const;
   size_t scrollStep() const;
@@ -101,6 +102,18 @@ class ScreenRenderer {
 
     int x = 0;
     int y = 0;
+  };
+
+  struct AvatarAnimationState {
+    bool active = false;
+    Rect rect;
+    uint8_t scale = 1;
+    int crop_left = 0;
+    int visible_width = 0;
+    uint8_t frame = 0;
+    bool blinking = false;
+    uint32_t next_blink_ms = 0;
+    uint32_t next_frame_ms = 0;
   };
 
   enum class BubbleTailDirection : uint8_t {
@@ -195,7 +208,10 @@ class ScreenRenderer {
 
   uint16_t avatarBackgroundColor() const;
   uint16_t dialogueBorderColor() const;
-  uint16_t avatarColor(uint8_t row, int col) const;
+  uint16_t avatarColor(uint8_t row, int col, uint8_t frame = 0) const;
+  void startAvatarAnimation(const AvatarDialogueLayout& layout, uint32_t now_ms);
+  void stopAvatarAnimation();
+  void renderAvatarAnimationFrame(uint8_t frame);
   bool batteryPercentMode() const;
   int16_t batteryLevelPercent() const;
   uint8_t batteryLevelBars() const;
@@ -218,6 +234,7 @@ class ScreenRenderer {
   bool power_snapshot_valid_ = false;
   bool screen_on_ = false;
   LocalState local_;
+  AvatarAnimationState avatar_animation_;
   uint8_t backlight_brightness_ = 96;
 };
 

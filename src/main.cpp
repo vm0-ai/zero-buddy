@@ -428,6 +428,7 @@ void pollControls() {
   handleBrightnessButton();
   handleResetButton();
   refreshPowerSnapshot(false);
+  g_screen.tickAvatarAnimation(millis());
 }
 
 void cancelCheckTimers() {

@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <M5Unified.h>
 
+#include "spleen_8x16.h"
+
 #include <algorithm>
 #include <vector>
 
@@ -63,6 +65,8 @@ struct ChatGlyph {
   const lgfx::IFont* font = &fonts::efontCN_16;
   size_t width = kChatCjkWidth;
   int8_t y_offset = 0;
+  bool spleen_ascii = false;
+  char ascii = '\0';
 };
 
 bool sameRenderScreenState(const state::RenderScreenState& lhs,
@@ -95,6 +99,37 @@ const lgfx::IFont* chatFontForCodepoint(uint32_t codepoint) {
     }
   }
   return nullptr;
+}
+
+bool isSpleenAscii(uint32_t codepoint) {
+  return codepoint >= kSpleen8x16First && codepoint <= kSpleen8x16Last;
+}
+
+const uint8_t* spleenGlyphFor(char ch) {
+  const uint8_t code = static_cast<uint8_t>(ch);
+  if (!isSpleenAscii(code)) {
+    return nullptr;
+  }
+  return kSpleen8x16[code - kSpleen8x16First];
+}
+
+uint16_t currentTextColor() {
+  return M5.Display.color24to16(M5.Display.getTextStyle().fore_rgb888);
+}
+
+void drawSpleenGlyph(char ch, int x, int y, uint16_t color) {
+  const uint8_t* rows = spleenGlyphFor(ch);
+  if (rows == nullptr) {
+    return;
+  }
+  for (uint8_t row = 0; row < kSpleen8x16Height; ++row) {
+    const uint8_t bits = rows[row];
+    for (uint8_t col = 0; col < kSpleen8x16Width; ++col) {
+      if ((bits & (0x80 >> col)) != 0) {
+        M5.Display.drawPixel(x + col, y + row, color);
+      }
+    }
+  }
 }
 
 size_t decodeUtf8Codepoint(const std::string& text,
@@ -148,21 +183,18 @@ ChatGlyph chatGlyphAt(const std::string& text, size_t* offset) {
 
   if (codepoint < 0x80) {
     glyph.text.assign(1, static_cast<char>(codepoint));
-    glyph.font = &fonts::AsciiFont8x16;
-    glyph.width =
-        codepoint == ' ' ? kChatSpaceWidth : std::max<int32_t>(
-                                                1, M5.Display.textWidth(
-                                                       glyph.text.c_str(),
-                                                       glyph.font));
+    glyph.spleen_ascii = isSpleenAscii(codepoint);
+    glyph.ascii = glyph.spleen_ascii ? static_cast<char>(codepoint) : '?';
+    glyph.width = kSpleen8x16Width;
     return glyph;
   }
 
   const lgfx::IFont* font = chatFontForCodepoint(codepoint);
   if (font == nullptr) {
     glyph.text = "?";
-    glyph.font = &fonts::AsciiFont8x16;
-    glyph.width =
-        std::max<int32_t>(1, M5.Display.textWidth(glyph.text.c_str(), glyph.font));
+    glyph.spleen_ascii = true;
+    glyph.ascii = '?';
+    glyph.width = kSpleen8x16Width;
     return glyph;
   }
 
@@ -216,13 +248,18 @@ void drawChatGlyphs(const std::vector<ChatGlyph>& glyphs,
                     int y,
                     bool bold = false) {
   int cursor_x = x;
+  const uint16_t fg = currentTextColor();
   for (const ChatGlyph& glyph : glyphs) {
-    M5.Display.setFont(glyph.font);
-    M5.Display.setCursor(cursor_x, y + glyph.y_offset);
-    M5.Display.print(glyph.text.c_str());
-    if (bold && !glyph.text.empty()) {
-      M5.Display.setCursor(cursor_x + 1, y + glyph.y_offset);
+    if (glyph.spleen_ascii) {
+      drawSpleenGlyph(glyph.ascii, cursor_x, y + glyph.y_offset, fg);
+    } else {
+      M5.Display.setFont(glyph.font);
+      M5.Display.setCursor(cursor_x, y + glyph.y_offset);
       M5.Display.print(glyph.text.c_str());
+      if (bold && !glyph.text.empty()) {
+        M5.Display.setCursor(cursor_x + 1, y + glyph.y_offset);
+        M5.Display.print(glyph.text.c_str());
+      }
     }
     cursor_x += static_cast<int>(glyph.width);
   }
@@ -684,8 +721,8 @@ void ScreenRenderer::render_screen_boot() {
 
 void ScreenRenderer::render_screen_read_empty() {
   render_avatar_layout_status(state::RenderScreenKind::ReadEmpty,
-                              "all caught up",
-                              "no message");
+                              "all clear",
+                              "nothing new");
 }
 
 void ScreenRenderer::render_screen_read_message(size_t index,
@@ -1723,13 +1760,7 @@ void ScreenRenderer::renderWrappedChatText(const std::string& text,
 
   auto flush_line = [&]() {
     if (!line.empty() && lineVisible()) {
-      int cursor_x = x;
-      for (const ChatGlyph& glyph : line) {
-        M5.Display.setFont(glyph.font);
-        M5.Display.setCursor(cursor_x, line_y + glyph.y_offset);
-        M5.Display.print(glyph.text.c_str());
-        cursor_x += static_cast<int>(glyph.width);
-      }
+      drawChatGlyphs(line, x, line_y);
     }
     line.clear();
     line_width = 0;

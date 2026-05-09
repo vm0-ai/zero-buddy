@@ -4,6 +4,7 @@
 #include <M5Unified.h>
 
 #include <algorithm>
+#include <vector>
 
 namespace zero_buddy {
 namespace screen {
@@ -15,7 +16,10 @@ constexpr uint8_t kReadPaddingRight = 8;
 constexpr uint8_t kReadPaddingLeft = kReadPaddingRight + 2;
 constexpr uint8_t kReadPaddingBottom = 8;
 constexpr uint8_t kReadHeaderHeight = 14;
-constexpr uint8_t kReadLineHeight = 18;
+constexpr uint8_t kReadLineHeight = 24;
+constexpr uint8_t kChatSpaceWidth = 5;
+constexpr uint8_t kChatCjkWidth = 16;
+constexpr int8_t kChatCjkYOffset = 2;
 constexpr uint8_t kZeroAvatarWidth = 80;
 constexpr uint8_t kZeroAvatarHeight = 45;
 constexpr uint8_t kZeroAvatarScale = 2;
@@ -35,6 +39,13 @@ struct TinyFontGlyph {
   uint8_t columns[kTinyFontGlyphWidth];
 };
 
+struct ChatGlyph {
+  std::string text;
+  const lgfx::IFont* font = &fonts::efontCN_16;
+  size_t width = kChatCjkWidth;
+  int8_t y_offset = 0;
+};
+
 bool sameRenderScreenState(const state::RenderScreenState& lhs,
                            const state::RenderScreenState& rhs) {
   return lhs.kind == rhs.kind &&
@@ -42,6 +53,106 @@ bool sameRenderScreenState(const state::RenderScreenState& lhs,
          lhs.value2 == rhs.value2 &&
          lhs.value3 == rhs.value3 &&
          lhs.value4 == rhs.value4;
+}
+
+bool fontSupportsCodepoint(const lgfx::IFont* font, uint32_t codepoint) {
+  if (font == nullptr || codepoint > 0xFFFF) {
+    return false;
+  }
+  lgfx::FontMetrics metrics;
+  font->getDefaultMetric(&metrics);
+  return font->updateFontMetric(&metrics, static_cast<uint16_t>(codepoint));
+}
+
+const lgfx::IFont* chatFontForCodepoint(uint32_t codepoint) {
+  const lgfx::IFont* fallback_fonts[] = {
+      &fonts::efontCN_16,
+      &fonts::efontJA_16,
+      &fonts::efontTW_16,
+  };
+  for (const lgfx::IFont* font : fallback_fonts) {
+    if (fontSupportsCodepoint(font, codepoint)) {
+      return font;
+    }
+  }
+  return nullptr;
+}
+
+size_t decodeUtf8Codepoint(const std::string& text,
+                           size_t offset,
+                           uint32_t* codepoint_out) {
+  if (codepoint_out == nullptr || offset >= text.size()) {
+    return 0;
+  }
+  const uint8_t first = static_cast<uint8_t>(text[offset]);
+  if (first < 0x80) {
+    *codepoint_out = first;
+    return 1;
+  }
+  if ((first & 0xE0) == 0xC0 && offset + 1 < text.size()) {
+    *codepoint_out =
+        ((first & 0x1F) << 6) |
+        (static_cast<uint8_t>(text[offset + 1]) & 0x3F);
+    return 2;
+  }
+  if ((first & 0xF0) == 0xE0 && offset + 2 < text.size()) {
+    *codepoint_out =
+        ((first & 0x0F) << 12) |
+        ((static_cast<uint8_t>(text[offset + 1]) & 0x3F) << 6) |
+        (static_cast<uint8_t>(text[offset + 2]) & 0x3F);
+    return 3;
+  }
+  if ((first & 0xF8) == 0xF0 && offset + 3 < text.size()) {
+    *codepoint_out =
+        ((first & 0x07) << 18) |
+        ((static_cast<uint8_t>(text[offset + 1]) & 0x3F) << 12) |
+        ((static_cast<uint8_t>(text[offset + 2]) & 0x3F) << 6) |
+        (static_cast<uint8_t>(text[offset + 3]) & 0x3F);
+    return 4;
+  }
+  *codepoint_out = '?';
+  return 1;
+}
+
+ChatGlyph chatGlyphAt(const std::string& text, size_t* offset) {
+  ChatGlyph glyph;
+  if (offset == nullptr || *offset >= text.size()) {
+    glyph.text = "";
+    glyph.width = 0;
+    return glyph;
+  }
+
+  uint32_t codepoint = 0;
+  const size_t len = decodeUtf8Codepoint(text, *offset, &codepoint);
+  const size_t safe_len = std::max<size_t>(1, len);
+  *offset = std::min(text.size(), *offset + safe_len);
+
+  if (codepoint < 0x80) {
+    glyph.text.assign(1, static_cast<char>(codepoint));
+    glyph.font = &fonts::Font2;
+    glyph.width =
+        codepoint == ' ' ? kChatSpaceWidth : std::max<int32_t>(
+                                                1, M5.Display.textWidth(
+                                                       glyph.text.c_str(),
+                                                       glyph.font));
+    return glyph;
+  }
+
+  const lgfx::IFont* font = chatFontForCodepoint(codepoint);
+  if (font == nullptr) {
+    glyph.text = "?";
+    glyph.font = &fonts::Font2;
+    glyph.width =
+        std::max<int32_t>(1, M5.Display.textWidth(glyph.text.c_str(), glyph.font));
+    return glyph;
+  }
+
+  glyph.text.assign(text, *offset - safe_len, safe_len);
+  glyph.font = font;
+  glyph.y_offset = kChatCjkYOffset;
+  glyph.width =
+      std::max<int32_t>(1, M5.Display.textWidth(glyph.text.c_str(), font));
+  return glyph;
 }
 
 constexpr TinyFontGlyph kTinyFont[] = {
@@ -504,9 +615,11 @@ void ScreenRenderer::render_element_instruction_text(const char* line1,
   constexpr int kInstructionLineGap = 12;
   const int text_x = bubble_x + 9;
   const int text_w = bubble_w - 18;
-  const int normal_h = 20;
+  constexpr int kTitleHeight = 20;
+  constexpr int kDetailHeight = 20;
   const int emphasis_h = kTinyFontGlyphHeight * emphasis_scale;
-  const int block_h = normal_h * 2 + emphasis_h + kInstructionLineGap * 2;
+  const int block_h = kTitleHeight + emphasis_h + kDetailHeight +
+                      kInstructionLineGap * 2;
   const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
 
   auto drawCenteredTiny = [&](const char* text, int y, uint8_t scale) {
@@ -518,11 +631,13 @@ void ScreenRenderer::render_element_instruction_text(const char* line1,
 
   M5.Display.setFont(&fonts::Font2);
   printCenteredFittedLine(line1, text_x, block_y, text_w);
-  drawCenteredTiny(emphasis, block_y + normal_h + kInstructionLineGap, emphasis_scale);
+  drawCenteredTiny(emphasis,
+                   block_y + kTitleHeight + kInstructionLineGap,
+                   emphasis_scale);
   M5.Display.setFont(&fonts::Font2);
   printCenteredFittedLine(line3,
                           text_x,
-                          block_y + normal_h + kInstructionLineGap +
+                          block_y + kTitleHeight + kInstructionLineGap +
                               emphasis_h + kInstructionLineGap,
                           text_w);
 }
@@ -540,13 +655,20 @@ void ScreenRenderer::render_element_status_pair_text(const char* title,
   const bool has_detail = detail != nullptr && detail[0] != '\0';
   const int text_x = bubble_x + 10;
   const int text_w = bubble_w - 20;
-  const int block_h = has_detail ? 54 : 24;
+  constexpr int kTitleHeight = 20;
+  constexpr int kDetailHeight = 20;
+  constexpr int kStatusLineGap = 10;
+  const int block_h = has_detail ? kTitleHeight + kStatusLineGap + kDetailHeight
+                                 : kTitleHeight;
   const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
   M5.Display.setFont(&fonts::Font2);
   printCenteredFittedLine(title, text_x, block_y, text_w, true);
   if (has_detail) {
-    M5.Display.setFont(&fonts::Font0);
-    printCenteredFittedLine(detail, text_x, block_y + 38, text_w);
+    M5.Display.setFont(&fonts::Font2);
+    printCenteredFittedLine(detail,
+                            text_x,
+                            block_y + kTitleHeight + kStatusLineGap,
+                            text_w);
   }
 }
 
@@ -570,7 +692,7 @@ void ScreenRenderer::render_element_preview_text(const char* title,
 
   M5.Display.setClipRect(text_x, text_y, text_w, text_h);
   M5.Display.setTextColor(border, TFT_WHITE);
-  M5.Display.setFont(&fonts::efontCN_12);
+  M5.Display.setFont(&fonts::efontCN_16);
   renderWrappedChatText(body, text_x, text_y, text_w, 0);
   M5.Display.clearClipRect();
   M5.Display.setTextWrap(false);
@@ -601,7 +723,7 @@ void ScreenRenderer::render_element_chat_message(const std::string& message,
   M5.Display.fillRect(kReadPaddingLeft, body_y, body_w, body_h, bg);
   M5.Display.setClipRect(kReadPaddingLeft, body_y, body_w, body_h);
   M5.Display.setTextColor(fg, bg);
-  M5.Display.setFont(&fonts::efontCN_12);
+  M5.Display.setFont(&fonts::efontCN_16);
   renderWrappedChatText(message, kReadPaddingLeft, body_y, body_w, scroll_top);
   M5.Display.clearClipRect();
   M5.Display.setTextWrap(false);
@@ -944,13 +1066,18 @@ void ScreenRenderer::renderWrappedChatText(const std::string& text,
   const int line_height = static_cast<int>(kReadLineHeight);
   int line_y = y - static_cast<int>(scroll_top);
   size_t line_width = 0;
-  std::string line;
+  std::vector<ChatGlyph> line;
   M5.Display.setTextWrap(false);
 
   auto flush_line = [&]() {
     if (!line.empty()) {
-      M5.Display.setCursor(x, line_y);
-      M5.Display.print(line.c_str());
+      int cursor_x = x;
+      for (const ChatGlyph& glyph : line) {
+        M5.Display.setFont(glyph.font);
+        M5.Display.setCursor(cursor_x, line_y + glyph.y_offset);
+        M5.Display.print(glyph.text.c_str());
+        cursor_x += static_cast<int>(glyph.width);
+      }
       line.clear();
     }
     line_width = 0;
@@ -964,13 +1091,13 @@ void ScreenRenderer::renderWrappedChatText(const std::string& text,
       continue;
     }
 
-    const size_t glyph_start = i;
-    const size_t glyph_width = utf8DisplayWidthPx(text, &i);
+    ChatGlyph glyph = chatGlyphAt(text, &i);
+    const size_t glyph_width = glyph.width;
     if (line_width > 0 &&
         line_width + glyph_width > static_cast<size_t>(std::max(1, width_px))) {
       flush_line();
     }
-    line.append(text, glyph_start, i - glyph_start);
+    line.push_back(glyph);
     line_width += glyph_width;
   }
 
@@ -1006,25 +1133,11 @@ size_t ScreenRenderer::utf8DisplayWidthPx(const std::string& text, size_t* offse
   if (offset == nullptr || *offset >= text.size()) {
     return 0;
   }
-  const uint8_t first = static_cast<uint8_t>(text[*offset]);
   if (text[*offset] == '\n') {
     ++(*offset);
     return 0;
   }
-  if (first < 0x80) {
-    ++(*offset);
-    return first == ' ' ? 4 : 6;
-  }
-  size_t len = 1;
-  if ((first & 0xE0) == 0xC0) {
-    len = 2;
-  } else if ((first & 0xF0) == 0xE0) {
-    len = 3;
-  } else if ((first & 0xF8) == 0xF0) {
-    len = 4;
-  }
-  *offset = std::min(text.size(), *offset + len);
-  return 12;
+  return chatGlyphAt(text, offset).width;
 }
 
 uint32_t ScreenRenderer::hashText(const char* text) const {

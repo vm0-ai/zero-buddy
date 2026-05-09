@@ -70,8 +70,6 @@ using zero_buddy::controls::ResetButtonAction;
 
 constexpr uint32_t kRtcMagic = 0x5A0B2028UL;
 constexpr gpio_num_t kBtnAWakePin = GPIO_NUM_11;
-constexpr gpio_num_t kLedGpio = GPIO_NUM_10;
-constexpr int kLedPin = static_cast<int>(kLedGpio);
 constexpr uint8_t kBeepVolume = 192;
 constexpr int kSampleRate = 16000;
 constexpr size_t kMicSamplesPerRead = 256;
@@ -143,6 +141,7 @@ NimBLEAdvertising* g_ble_advertising = nullptr;
 bool g_ble_started = false;
 
 void beepAssistantLedOn();
+bool assistant_message_exists();
 bool writeTextFile(const char* path, const std::string& value);
 bool writeAssistantQueueManifest(size_t count, size_t index, size_t scroll_top);
 void clearRuntimeConfig();
@@ -181,30 +180,22 @@ uint64_t gpioWakeMask(gpio_num_t pin) {
 }
 
 void setStatusLed(bool on) {
-  pinMode(kLedPin, OUTPUT);
-  digitalWrite(kLedPin, on ? LOW : HIGH);
-}
-
-void releaseLedHold() {
-  gpio_deep_sleep_hold_dis();
-  gpio_hold_dis(kLedGpio);
-}
-
-void holdLedThroughDeepSleep() {
-  gpio_hold_en(kLedGpio);
-  gpio_deep_sleep_hold_en();
+  if (g_pm1_ready) {
+    g_pm1.setLedEnLevel(on);
+  }
 }
 
 void setAssistantLedOn() {
-  releaseLedHold();
   beepAssistantLedOn();
   setStatusLed(true);
-  holdLedThroughDeepSleep();
 }
 
 void setAssistantLedOff() {
-  releaseLedHold();
   setStatusLed(false);
+}
+
+void syncAssistantLedState() {
+  setStatusLed(assistant_message_exists());
 }
 
 void beepTone(int freq_hz, int duration_ms) {
@@ -2511,6 +2502,7 @@ void setup() {
   restoreBacklightStep();
   restorePersistentLastMessageCursor();
   zero_buddy::state::setHasAssistantMessage(&g_state, assistant_message_exists());
+  syncAssistantLedState();
 
   const uint64_t ext1_wake_mask =
       wake_cause == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;

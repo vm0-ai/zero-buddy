@@ -1,6 +1,7 @@
 # Zero Buddy
 
-Firmware for a small AI voice companion on M5StickS3 ESP32-S3 hardware.
+Firmware for a small AI voice companion designed specifically for the
+M5StickS3 ESP32-S3 device.
 
 Zero Buddy records raw microphone audio, sends PCM bytes to Zero's
 transcription API, sends the recognized text to a Zero chat thread, polls that
@@ -9,7 +10,7 @@ renders them on the device screen.
 
 ## Hardware
 
-- Target board: M5StickS3
+- Target board: M5StickS3 / ESP32-S3-PICO-1N8R8
 - Display: 1.14" StickS3 LCD
 - Power: battery, VBUS, and charging state are sampled through M5Unified
   `M5.Power` APIs; external power detection uses the M5PM1 SDK power-source
@@ -135,30 +136,59 @@ and thread id, when provided, take precedence over older NVS auth/thread values.
 
 `src/secrets.h` is ignored by git. Do not commit real credentials.
 
-## Build, Test, Upload
+## Build, Test, Flash
 
 Install PlatformIO, then run:
 
 ```sh
 pio test -e native
-pio run -e m5stick-c
-pio run -e m5stick-c -t upload
+pio run -e m5stack-sticks3
+pio run -e m5stack-sticks3 -t upload
 ```
 
-The default serial port is configured in `platformio.ini`:
+The default serial port pattern is configured in `platformio.ini`:
 
 ```text
-/dev/cu.usbserial-9552026538
+/dev/cu.usbmodem*
 ```
 
 If your device appears on a different port, update `platformio.ini` or pass the
 port through PlatformIO.
 
+macOS example:
+
+```sh
+pio run -e m5stack-sticks3 -t upload --upload-port /dev/cu.usbmodem1143301
+```
+
 Serial monitor:
 
 ```sh
-pio device monitor -e m5stick-c
+pio device monitor -e m5stack-sticks3
 ```
+
+## GitHub Firmware Releases
+
+Every commit pushed to `main` runs the firmware release workflow:
+
+1. Run native unit tests.
+2. Build the `m5stack-sticks3` firmware.
+3. Package flashable ESP32-S3 images.
+4. Publish a GitHub Release tagged `firmware-<short-sha>`.
+
+The release contains `firmware.bin` plus a zip package with:
+
+- `bootloader.bin`
+- `partitions.bin`
+- `boot_app0.bin`
+- `firmware.bin`
+- `firmware.elf`
+- `FLASHING.txt`
+
+GitHub-hosted runners cannot access a local USB device, so the workflow
+publishes flashable firmware artifacts rather than physically flashing a desk
+device. To flash a downloaded release package manually, install `esptool` and
+follow the command in `FLASHING.txt`.
 
 ## State Storage
 

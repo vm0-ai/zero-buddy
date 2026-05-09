@@ -1,0 +1,99 @@
+name: Firmware Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: firmware-release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Run host unit tests
+        run: pio test -e native
+
+      - name: Build M5StickS3 firmware
+        run: pio run -e m5stack-sticks3
+
+      - name: Package flashable images
+        id: package
+        run: |
+          set -euo pipefail
+
+          short_sha="${GITHUB_SHA::7}"
+          package="zero-buddy-sticks3-${short_sha}"
+          out_dir="dist/${package}"
+
+          mkdir -p "${out_dir}"
+          cp .pio/build/m5stack-sticks3/bootloader.bin "${out_dir}/"
+          cp .pio/build/m5stack-sticks3/partitions.bin "${out_dir}/"
+          cp .pio/build/m5stack-sticks3/firmware.bin "${out_dir}/"
+          cp .pio/build/m5stack-sticks3/firmware.elf "${out_dir}/"
+          cp "${HOME}/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" "${out_dir}/"
+
+          cat > "${out_dir}/FLASHING.txt" <<'EOF'
+          Zero Buddy M5StickS3 firmware package
+
+          Install esptool:
+
+            python3 -m pip install esptool
+
+          Flash from this directory:
+
+            python3 -m esptool --chip esp32s3 --baud 460800 --before default_reset --after hard_reset write_flash -z \
+              0x0000 bootloader.bin \
+              0x8000 partitions.bin \
+              0xe000 boot_app0.bin \
+              0x10000 firmware.bin
+
+          On macOS, pass the port explicitly if needed:
+
+            python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX --baud 460800 --before default_reset --after hard_reset write_flash -z \
+              0x0000 bootloader.bin \
+              0x8000 partitions.bin \
+              0xe000 boot_app0.bin \
+              0x10000 firmware.bin
+          EOF
+
+          (cd dist && zip -r "${package}.zip" "${package}")
+
+          echo "tag=firmware-${short_sha}" >> "${GITHUB_OUTPUT}"
+          echo "title=Zero Buddy StickS3 ${short_sha}" >> "${GITHUB_OUTPUT}"
+          echo "zip=dist/${package}.zip" >> "${GITHUB_OUTPUT}"
+          echo "firmware=${out_dir}/firmware.bin" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.title }}
+          path: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.firmware }}
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.package.outputs.tag }}" \
+            "${{ steps.package.outputs.zip }}#Flashable firmware package" \
+            "${{ steps.package.outputs.firmware }}#Application firmware.bin" \
+            --target "${GITHUB_SHA}" \
+            --title "${{ steps.package.outputs.title }}" \
+            --notes "Automated M5StickS3 firmware build for commit ${GITHUB_SHA}." \
+            --latest

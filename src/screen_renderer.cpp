@@ -11,13 +11,14 @@ namespace screen {
 namespace {
 
 constexpr uint8_t kScreenBrightness = 90;
+constexpr uint8_t kPortraitRotation = 0;
 constexpr uint8_t kReadPaddingTop = 8;
 constexpr uint8_t kReadPaddingRight = 8;
 constexpr uint8_t kReadPaddingLeft = kReadPaddingRight + 2;
 constexpr uint8_t kReadPaddingBottom = 8;
 constexpr uint8_t kReadHeaderHeight = 14;
 constexpr uint8_t kReadLineHeight = 24;
-constexpr uint8_t kChatSpaceWidth = 5;
+constexpr uint8_t kChatSpaceWidth = 8;
 constexpr uint8_t kChatCjkWidth = 16;
 constexpr int8_t kChatCjkYOffset = 2;
 constexpr uint8_t kZeroAvatarWidth = 80;
@@ -27,8 +28,19 @@ constexpr int kZeroAvatarCropLeft = kZeroAvatarWidth / 4;
 constexpr int kZeroAvatarCropRight = kZeroAvatarWidth / 4;
 constexpr int kZeroAvatarVisibleWidth =
     kZeroAvatarWidth - kZeroAvatarCropLeft - kZeroAvatarCropRight;
-constexpr int kZeroAvatarRightPadding = 8;
 constexpr int kDialoguePadding = 5;
+constexpr int kAvatarBubbleGap = 5;
+constexpr int kMinDialogueBubbleHeight = 58;
+constexpr int kTopAvatarRightPadding = 4;
+constexpr int kTopAvatarTopPadding = 5;
+constexpr int kTopBarBottomGap = 5;
+constexpr int kBatteryBodyWidth = 15;
+constexpr int kBatteryBodyHeight = 10;
+constexpr int kBatteryCapWidth = 2;
+constexpr int kCheckingIconWidth = 10;
+constexpr int kCheckingIconHeight = 14;
+constexpr int kCheckingIconGap = 5;
+constexpr int kCheckingIconClearPadding = 2;
 constexpr int kTinyFontGlyphWidth = 5;
 constexpr int kTinyFontGlyphHeight = 7;
 constexpr int kTinyFontScale = 3;
@@ -129,7 +141,7 @@ ChatGlyph chatGlyphAt(const std::string& text, size_t* offset) {
 
   if (codepoint < 0x80) {
     glyph.text.assign(1, static_cast<char>(codepoint));
-    glyph.font = &fonts::Font2;
+    glyph.font = &fonts::AsciiFont8x16;
     glyph.width =
         codepoint == ' ' ? kChatSpaceWidth : std::max<int32_t>(
                                                 1, M5.Display.textWidth(
@@ -141,7 +153,7 @@ ChatGlyph chatGlyphAt(const std::string& text, size_t* offset) {
   const lgfx::IFont* font = chatFontForCodepoint(codepoint);
   if (font == nullptr) {
     glyph.text = "?";
-    glyph.font = &fonts::Font2;
+    glyph.font = &fonts::AsciiFont8x16;
     glyph.width =
         std::max<int32_t>(1, M5.Display.textWidth(glyph.text.c_str(), glyph.font));
     return glyph;
@@ -153,6 +165,82 @@ ChatGlyph chatGlyphAt(const std::string& text, size_t* offset) {
   glyph.width =
       std::max<int32_t>(1, M5.Display.textWidth(glyph.text.c_str(), font));
   return glyph;
+}
+
+std::vector<ChatGlyph> chatGlyphsForText(const char* text) {
+  std::vector<ChatGlyph> glyphs;
+  const std::string value(text != nullptr ? text : "");
+  for (size_t i = 0; i < value.size();) {
+    if (value[i] == '\n') {
+      break;
+    }
+    glyphs.push_back(chatGlyphAt(value, &i));
+  }
+  return glyphs;
+}
+
+size_t chatGlyphsWidth(const std::vector<ChatGlyph>& glyphs) {
+  size_t width = 0;
+  for (const ChatGlyph& glyph : glyphs) {
+    width += glyph.width;
+  }
+  return width;
+}
+
+void fitChatGlyphsToWidth(std::vector<ChatGlyph>* glyphs, int max_width) {
+  if (glyphs == nullptr || max_width <= 0 ||
+      chatGlyphsWidth(*glyphs) <= static_cast<size_t>(max_width)) {
+    return;
+  }
+  std::vector<ChatGlyph> ellipsis = chatGlyphsForText("...");
+  const size_t ellipsis_width = chatGlyphsWidth(ellipsis);
+  while (!glyphs->empty() &&
+         chatGlyphsWidth(*glyphs) + ellipsis_width >
+             static_cast<size_t>(max_width)) {
+    glyphs->pop_back();
+  }
+  if (ellipsis_width <= static_cast<size_t>(max_width)) {
+    glyphs->insert(glyphs->end(), ellipsis.begin(), ellipsis.end());
+  }
+}
+
+void drawChatGlyphs(const std::vector<ChatGlyph>& glyphs,
+                    int x,
+                    int y,
+                    bool bold = false) {
+  int cursor_x = x;
+  for (const ChatGlyph& glyph : glyphs) {
+    M5.Display.setFont(glyph.font);
+    M5.Display.setCursor(cursor_x, y + glyph.y_offset);
+    M5.Display.print(glyph.text.c_str());
+    if (bold && !glyph.text.empty()) {
+      M5.Display.setCursor(cursor_x + 1, y + glyph.y_offset);
+      M5.Display.print(glyph.text.c_str());
+    }
+    cursor_x += static_cast<int>(glyph.width);
+  }
+}
+
+void drawCenteredChatLine(const char* text,
+                          int x,
+                          int y,
+                          int max_width,
+                          bool bold = false) {
+  std::vector<ChatGlyph> glyphs = chatGlyphsForText(text);
+  fitChatGlyphsToWidth(&glyphs, max_width);
+  const int line_x =
+      x + std::max(0, (max_width - static_cast<int>(chatGlyphsWidth(glyphs))) / 2);
+  drawChatGlyphs(glyphs, line_x, y, bold);
+}
+
+void drawFittedChatLine(const char* text,
+                        int x,
+                        int y,
+                        int max_width,
+                        bool bold = false) {
+  std::vector<ChatGlyph> glyphs = chatGlyphsForText(text);
+  fitChatGlyphsToWidth(&glyphs, max_width);
+  drawChatGlyphs(glyphs, x, y, bold);
 }
 
 constexpr TinyFontGlyph kTinyFont[] = {
@@ -360,7 +448,7 @@ void ScreenRenderer::setSharedState(state::GlobalState* shared_state) {
 }
 
 void ScreenRenderer::screenOn() {
-  M5.Display.setRotation(3);
+  M5.Display.setRotation(kPortraitRotation);
   M5.Display.setBrightness(kScreenBrightness);
 }
 
@@ -447,14 +535,14 @@ void ScreenRenderer::render_screen_recording_transcribing() {
 
 void ScreenRenderer::render_screen_recording_sending(const std::string& user_text) {
   render_avatar_layout_preview(state::RenderScreenKind::RecordingSending,
-                               "sending",
+                               "Sending",
                                user_text);
 }
 
-void ScreenRenderer::render_screen_recording_sent() {
-  render_avatar_layout_status(state::RenderScreenKind::RecordingSent,
-                              "sent",
-                              "message sent");
+void ScreenRenderer::render_screen_recording_sent(const std::string& user_text) {
+  render_avatar_layout_preview(state::RenderScreenKind::RecordingSent,
+                               "Sent",
+                               user_text);
 }
 
 void ScreenRenderer::render_screen_recording_aborted() {
@@ -470,9 +558,11 @@ void ScreenRenderer::render_screen_recording_failed(const char* detail) {
 }
 
 void ScreenRenderer::render_screen_checking_messages() {
-  render_avatar_layout_status(state::RenderScreenKind::CheckingMessages,
-                              "checking",
-                              "messages...");
+  render_checking_indicator(true);
+}
+
+void ScreenRenderer::clear_checking_messages_indicator() {
+  render_checking_indicator(false);
 }
 
 void ScreenRenderer::render_screen_setup_wifi() {
@@ -506,30 +596,26 @@ void ScreenRenderer::render_element_battery_level() {
 
   const uint16_t bg = avatarBackgroundColor();
   const uint16_t fg = dialogueBorderColor();
-  constexpr int kBodyWidth = 22;
-  constexpr int kBodyHeight = 10;
-  constexpr int kCapWidth = 2;
   constexpr int kBarWidth = 3;
-  constexpr int kBarGap = 2;
-  const int x = std::max(0, M5.Display.width() - kReadPaddingRight -
-                                kBodyWidth - kCapWidth);
-  const int y = kReadPaddingTop + 1;
-  const int clear_x = std::max(0, x - 1);
-  M5.Display.fillRect(clear_x,
-                      0,
-                      M5.Display.width() - clear_x,
-                      kReadPaddingTop + kReadHeaderHeight,
+  constexpr int kBarGap = 1;
+  const ReadLayout layout = readLayout();
+  const int x = layout.battery.x;
+  const int y = layout.battery.y;
+  M5.Display.fillRect(std::max(0, x - 1),
+                      std::max(0, y - 1),
+                      kBatteryBodyWidth + kBatteryCapWidth + 3,
+                      kBatteryBodyHeight + 2,
                       bg);
-  M5.Display.drawRect(x, y, kBodyWidth, kBodyHeight, fg);
-  M5.Display.fillRect(x + kBodyWidth, y + 3, kCapWidth, 4, fg);
+  M5.Display.drawRect(x, y, kBatteryBodyWidth, kBatteryBodyHeight, fg);
+  M5.Display.fillRect(x + kBatteryBodyWidth, y + 3, kBatteryCapWidth, 4, fg);
 
   const int bar_y = y + 2;
-  for (uint8_t i = 0; i < 4; ++i) {
+  for (uint8_t i = 0; i < 3; ++i) {
     const int bar_x = x + 2 + i * (kBarWidth + kBarGap);
     if (i < bars) {
-      M5.Display.fillRect(bar_x, bar_y, kBarWidth, kBodyHeight - 4, fg);
+      M5.Display.fillRect(bar_x, bar_y, kBarWidth, kBatteryBodyHeight - 4, fg);
     } else {
-      M5.Display.drawRect(bar_x, bar_y, kBarWidth, kBodyHeight - 4, fg);
+      M5.Display.drawRect(bar_x, bar_y, kBarWidth, kBatteryBodyHeight - 4, fg);
     }
   }
 }
@@ -546,7 +632,7 @@ void ScreenRenderer::render_element_zero_avatar(int x,
                std::min(visible_width, static_cast<int>(kZeroAvatarWidth) - crop_left));
   for (uint8_t row = 0; row < kZeroAvatarHeight; ++row) {
     for (int col = 0; col < visible_width; ++col) {
-      const uint16_t color = avatarColor(kZeroAvatar[row][crop_left + col]);
+      const uint16_t color = avatarColor(row, crop_left + col);
       if (scale == 1) {
         M5.Display.drawPixel(x + col, y + row, color);
       } else {
@@ -612,14 +698,31 @@ void ScreenRenderer::render_element_instruction_text(const char* line1,
   M5.Display.setTextWrap(false);
 
   emphasis_scale = std::max<uint8_t>(1, emphasis_scale);
-  constexpr int kInstructionLineGap = 12;
   const int text_x = bubble_x + 9;
   const int text_w = bubble_w - 18;
   constexpr int kTitleHeight = 20;
   constexpr int kDetailHeight = 20;
+  const int max_block_h = std::max(1, bubble_h - 10);
+  while (emphasis_scale > 1) {
+    const int emphasis_h = kTinyFontGlyphHeight * emphasis_scale;
+    const int gap = std::max(4,
+                             std::min(12,
+                                      (max_block_h - kTitleHeight - kDetailHeight -
+                                       emphasis_h) /
+                                          2));
+    if (kTitleHeight + emphasis_h + kDetailHeight + gap * 2 <= max_block_h) {
+      break;
+    }
+    --emphasis_scale;
+  }
   const int emphasis_h = kTinyFontGlyphHeight * emphasis_scale;
+  const int instruction_gap =
+      std::max(4,
+               std::min(12,
+                        (max_block_h - kTitleHeight - kDetailHeight - emphasis_h) /
+                            2));
   const int block_h = kTitleHeight + emphasis_h + kDetailHeight +
-                      kInstructionLineGap * 2;
+                      instruction_gap * 2;
   const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
 
   auto drawCenteredTiny = [&](const char* text, int y, uint8_t scale) {
@@ -632,13 +735,13 @@ void ScreenRenderer::render_element_instruction_text(const char* line1,
   M5.Display.setFont(&fonts::Font2);
   printCenteredFittedLine(line1, text_x, block_y, text_w);
   drawCenteredTiny(emphasis,
-                   block_y + kTitleHeight + kInstructionLineGap,
+                   block_y + kTitleHeight + instruction_gap,
                    emphasis_scale);
   M5.Display.setFont(&fonts::Font2);
   printCenteredFittedLine(line3,
                           text_x,
-                          block_y + kTitleHeight + kInstructionLineGap +
-                              emphasis_h + kInstructionLineGap,
+                          block_y + kTitleHeight + instruction_gap +
+                              emphasis_h + instruction_gap,
                           text_w);
 }
 
@@ -661,14 +764,12 @@ void ScreenRenderer::render_element_status_pair_text(const char* title,
   const int block_h = has_detail ? kTitleHeight + kStatusLineGap + kDetailHeight
                                  : kTitleHeight;
   const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
-  M5.Display.setFont(&fonts::Font2);
-  printCenteredFittedLine(title, text_x, block_y, text_w, true);
+  drawCenteredChatLine(title, text_x, block_y, text_w, true);
   if (has_detail) {
-    M5.Display.setFont(&fonts::Font2);
-    printCenteredFittedLine(detail,
-                            text_x,
-                            block_y + kTitleHeight + kStatusLineGap,
-                            text_w);
+    drawCenteredChatLine(detail,
+                         text_x,
+                         block_y + kTitleHeight + kStatusLineGap,
+                         text_w);
   }
 }
 
@@ -687,8 +788,7 @@ void ScreenRenderer::render_element_preview_text(const char* title,
 
   M5.Display.setTextWrap(false);
   M5.Display.setTextColor(border, TFT_WHITE);
-  M5.Display.setFont(&fonts::Font2);
-  printFittedLine(title, text_x, title_y, text_w, true);
+  drawFittedChatLine(title, text_x, title_y, text_w, true);
 
   M5.Display.setClipRect(text_x, text_y, text_w, text_h);
   M5.Display.setTextColor(border, TFT_WHITE);
@@ -700,16 +800,19 @@ void ScreenRenderer::render_element_preview_text(const char* title,
 
 void ScreenRenderer::render_element_chat_header(size_t index, size_t count) {
   const uint16_t fg = dialogueBorderColor();
+  const ReadLayout layout = readLayout();
   M5.Display.setTextColor(fg, avatarBackgroundColor());
   M5.Display.setTextWrap(false);
   M5.Display.setFont(&fonts::Font0);
-  M5.Display.setCursor(kReadPaddingLeft, kReadPaddingTop);
-  M5.Display.print(String(static_cast<unsigned>(index + 1)) + "/" +
-                   String(static_cast<unsigned>(count)));
-  const int divider_y = static_cast<int>(kReadPaddingTop + kReadHeaderHeight);
-  M5.Display.drawFastHLine(kReadPaddingLeft,
-                           divider_y,
-                           M5.Display.width() - kReadPaddingLeft - kReadPaddingRight,
+  const String page_text = String(static_cast<unsigned>(index + 1)) + "/" +
+                           String(static_cast<unsigned>(count));
+  const int page_w = M5.Display.textWidth(page_text.c_str());
+  M5.Display.setCursor(layout.header.x + std::max(0, layout.header.w - page_w),
+                       layout.header.y);
+  M5.Display.print(page_text);
+  M5.Display.drawFastHLine(layout.header.x,
+                           layout.divider_y,
+                           layout.header.w,
                            fg);
 }
 
@@ -717,21 +820,24 @@ void ScreenRenderer::render_element_chat_message(const std::string& message,
                                                  size_t scroll_top) {
   const uint16_t bg = avatarBackgroundColor();
   const uint16_t fg = dialogueBorderColor();
-  const int body_y = static_cast<int>(readBodyTop());
-  const int body_h = static_cast<int>(readViewportHeight());
-  const int body_w = M5.Display.width() - kReadPaddingLeft - kReadPaddingRight;
-  M5.Display.fillRect(kReadPaddingLeft, body_y, body_w, body_h, bg);
-  M5.Display.setClipRect(kReadPaddingLeft, body_y, body_w, body_h);
+  const ReadLayout layout = readLayout();
+  M5.Display.fillRect(layout.body.x, layout.body.y, layout.body.w, layout.body.h, bg);
+  M5.Display.setClipRect(layout.body.x, layout.body.y, layout.body.w, layout.body.h);
   M5.Display.setTextColor(fg, bg);
   M5.Display.setFont(&fonts::efontCN_16);
-  renderWrappedChatText(message, kReadPaddingLeft, body_y, body_w, scroll_top);
+  renderWrappedChatText(message,
+                        layout.body.x,
+                        layout.body.y,
+                        layout.body.w,
+                        scroll_top);
   M5.Display.clearClipRect();
   M5.Display.setTextWrap(false);
 }
 
 void ScreenRenderer::render_element_next_page_arrow() {
-  const int right = M5.Display.width() - kReadPaddingRight - 1;
-  const int bottom = M5.Display.height() - kReadPaddingBottom - 1;
+  const ReadLayout layout = readLayout();
+  const int right = layout.body.x + layout.body.w - 1;
+  const int bottom = layout.screen.h - kReadPaddingBottom - 1;
   const int cx = right - 6;
   const int cy = bottom - 5;
   M5.Display.fillTriangle(cx - 5,
@@ -761,10 +867,9 @@ void ScreenRenderer::renderBatteryFollowupIfDue(uint32_t now_ms) {
 }
 
 size_t ScreenRenderer::maxScrollTopForMessage(const std::string& message) const {
-  const size_t width = static_cast<size_t>(
-      std::max(1, M5.Display.width() -
-                      static_cast<int>(kReadPaddingLeft + kReadPaddingRight)));
-  const size_t viewport = readViewportHeight();
+  const ReadLayout layout = readLayout();
+  const size_t width = static_cast<size_t>(std::max(1, layout.body.w));
+  const size_t viewport = static_cast<size_t>(std::max(1, layout.body.h));
   const size_t text_height = estimateWrappedTextHeight(message, width);
   if (text_height <= viewport) {
     return 0;
@@ -773,7 +878,12 @@ size_t ScreenRenderer::maxScrollTopForMessage(const std::string& message) const 
 }
 
 size_t ScreenRenderer::scrollStep() const {
-  return readViewportHeight();
+  const size_t viewport = readViewportHeight();
+  const size_t full_lines = std::max<size_t>(1, viewport / kReadLineHeight);
+  if (full_lines <= 1) {
+    return kReadLineHeight;
+  }
+  return (full_lines - 1) * kReadLineHeight;
 }
 
 uint32_t ScreenRenderer::hashString(const std::string& text) const {
@@ -811,6 +921,7 @@ bool ScreenRenderer::sameRenderState(const state::RenderScreenState& next) const
 void ScreenRenderer::resetElementState() {
   local_.battery_bars = 0xFF;
   local_.battery_visible = false;
+  local_.checking_indicator_visible = false;
 }
 
 bool ScreenRenderer::prepare_avatar_dialogue_screen(
@@ -846,10 +957,10 @@ void ScreenRenderer::render_avatar_layout_brand(state::RenderScreenKind kind,
     return;
   }
   render_element_brand_text(title,
-                            layout.bubble_x,
-                            layout.bubble_y,
-                            layout.bubble_w,
-                            layout.bubble_h);
+                            layout.bubble.x,
+                            layout.bubble.y,
+                            layout.bubble.w,
+                            layout.bubble.h);
   render_element_battery_level();
 }
 
@@ -873,10 +984,10 @@ void ScreenRenderer::render_avatar_layout_instruction(state::RenderScreenKind ki
                                   emphasis,
                                   line3,
                                   emphasis_scale,
-                                  layout.bubble_x,
-                                  layout.bubble_y,
-                                  layout.bubble_w,
-                                  layout.bubble_h);
+                                  layout.bubble.x,
+                                  layout.bubble.y,
+                                  layout.bubble.w,
+                                  layout.bubble.h);
   render_element_battery_level();
 }
 
@@ -896,10 +1007,10 @@ void ScreenRenderer::render_avatar_layout_status(state::RenderScreenKind kind,
   }
   render_element_status_pair_text(title,
                                   detail,
-                                  layout.bubble_x,
-                                  layout.bubble_y,
-                                  layout.bubble_w,
-                                  layout.bubble_h);
+                                  layout.bubble.x,
+                                  layout.bubble.y,
+                                  layout.bubble.w,
+                                  layout.bubble.h);
   render_element_battery_level();
 }
 
@@ -919,10 +1030,10 @@ void ScreenRenderer::render_avatar_layout_preview(state::RenderScreenKind kind,
   }
   render_element_preview_text(title,
                               body,
-                              layout.bubble_x,
-                              layout.bubble_y,
-                              layout.bubble_w,
-                              layout.bubble_h);
+                              layout.bubble.x,
+                              layout.bubble.y,
+                              layout.bubble.w,
+                              layout.bubble.h);
   render_element_battery_level();
 }
 
@@ -955,19 +1066,115 @@ bool ScreenRenderer::canReuseAvatarDialogueShell(
          previous.value4 == static_cast<uint32_t>(avatar_scale);
 }
 
-ScreenRenderer::AvatarDialogueLayout ScreenRenderer::avatarDialogueLayout(
-    uint8_t avatar_scale) const {
-  avatar_scale = std::max<uint8_t>(1, avatar_scale);
-  AvatarDialogueLayout layout;
+ScreenRenderer::Rect ScreenRenderer::screenRect() const {
+  return Rect{0, 0, M5.Display.width(), M5.Display.height()};
+}
+
+ScreenRenderer::Rect ScreenRenderer::insetRect(const Rect& rect, int inset) const {
+  inset = std::max(0, inset);
+  return Rect{
+      rect.x + inset,
+      rect.y + inset,
+      std::max(0, rect.w - inset * 2),
+      std::max(0, rect.h - inset * 2),
+  };
+}
+
+ScreenRenderer::Rect ScreenRenderer::batteryRect(const Rect& screen) const {
+  return Rect{
+      kReadPaddingLeft,
+      kReadPaddingTop + 1,
+      kBatteryBodyWidth + kBatteryCapWidth,
+      kBatteryBodyHeight,
+  };
+}
+
+uint8_t ScreenRenderer::effectiveAvatarScale(uint8_t requested_scale) const {
+  requested_scale = std::max<uint8_t>(1, requested_scale);
+  const Rect screen = screenRect();
+  const int max_by_width =
+      std::max(1,
+               (screen.w - kDialoguePadding - kTopAvatarRightPadding) /
+                   kZeroAvatarVisibleWidth);
+  const int max_by_height = std::max(
+      1,
+      (screen.h - kMinDialogueBubbleHeight - kDialoguePadding * 3 -
+       kAvatarBubbleGap - kTopBarBottomGap) /
+          static_cast<int>(kZeroAvatarHeight));
+  return static_cast<uint8_t>(
+      std::max(1, std::min<int>({requested_scale, max_by_width, max_by_height})));
+}
+
+ScreenRenderer::Rect ScreenRenderer::topBarAvatarRect(const Rect& screen,
+                                                      uint8_t avatar_scale) const {
+  avatar_scale = effectiveAvatarScale(avatar_scale);
   const int avatar_w = kZeroAvatarVisibleWidth * avatar_scale;
   const int avatar_h = static_cast<int>(kZeroAvatarHeight) * avatar_scale;
-  layout.avatar_x = M5.Display.width() - avatar_w - kZeroAvatarRightPadding;
-  layout.avatar_y = (M5.Display.height() - avatar_h) / 2;
-  layout.bubble_x = kDialoguePadding;
-  layout.bubble_y = kDialoguePadding;
-  layout.bubble_w = std::max(58, layout.avatar_x - kDialoguePadding - layout.bubble_x);
-  layout.bubble_h = M5.Display.height() - kDialoguePadding * 2;
-  layout.tail_y = layout.bubble_y + layout.bubble_h / 2;
+  return Rect{
+      std::max(kDialoguePadding, screen.w - avatar_w - kTopAvatarRightPadding),
+      kTopAvatarTopPadding,
+      avatar_w,
+      avatar_h,
+  };
+}
+
+ScreenRenderer::AvatarDialogueLayout ScreenRenderer::avatarDialogueLayout(
+    uint8_t avatar_scale) const {
+  avatar_scale = effectiveAvatarScale(avatar_scale);
+  const Rect screen = screenRect();
+  AvatarDialogueLayout layout;
+  layout.screen = screen;
+  layout.avatar_scale = avatar_scale;
+  layout.avatar_crop_left = kZeroAvatarCropLeft;
+  layout.avatar_visible_width = kZeroAvatarVisibleWidth;
+  layout.battery = batteryRect(screen);
+  layout.avatar = topBarAvatarRect(screen, avatar_scale);
+  layout.top_bar = Rect{
+      0,
+      0,
+      screen.w,
+      layout.avatar.y + layout.avatar.h + kTopBarBottomGap,
+  };
+  const int bubble_y = layout.top_bar.y + layout.top_bar.h + kAvatarBubbleGap;
+  layout.bubble = Rect{
+      kDialoguePadding,
+      bubble_y,
+      std::max(1, screen.w - kDialoguePadding * 2),
+      std::max(1, screen.h - bubble_y - kDialoguePadding),
+  };
+  layout.tail = Point{
+      layout.avatar.x + layout.avatar.w / 2,
+      std::max(layout.avatar.y + layout.avatar.h - 1, layout.bubble.y - 8),
+  };
+  layout.tail_direction = BubbleTailDirection::Top;
+  return layout;
+}
+
+ScreenRenderer::ReadLayout ScreenRenderer::readLayout() const {
+  const Rect screen = screenRect();
+  ReadLayout layout;
+  layout.screen = screen;
+  layout.battery = batteryRect(screen);
+  layout.top_bar = Rect{
+      0,
+      0,
+      screen.w,
+      kReadPaddingTop + kReadHeaderHeight,
+  };
+  layout.header = Rect{
+      kReadPaddingLeft,
+      kReadPaddingTop,
+      std::max(1, screen.w - static_cast<int>(kReadPaddingLeft + kReadPaddingRight)),
+      kReadHeaderHeight,
+  };
+  layout.divider_y = layout.header.y + layout.header.h;
+  const int body_y = layout.divider_y + 4;
+  layout.body = Rect{
+      kReadPaddingLeft,
+      body_y,
+      layout.header.w,
+      std::max(1, screen.h - body_y - static_cast<int>(kReadPaddingBottom)),
+  };
   return layout;
 }
 
@@ -983,30 +1190,104 @@ ScreenRenderer::AvatarDialogueLayout ScreenRenderer::render_avatar_dialogue_shel
 
   const uint16_t bg = avatarBackgroundColor();
   M5.Display.fillScreen(bg);
-  render_element_zero_avatar(layout.avatar_x,
-                             layout.avatar_y,
-                             avatar_scale,
-                             kZeroAvatarCropLeft,
-                             kZeroAvatarVisibleWidth);
-  render_element_dialogue_bubble(layout.bubble_x,
-                                 layout.bubble_y,
-                                 layout.bubble_w,
-                                 layout.bubble_h,
-                                 layout.avatar_x - 1,
-                                 layout.tail_y);
+  render_element_zero_avatar(layout.avatar.x,
+                             layout.avatar.y,
+                             layout.avatar_scale,
+                             layout.avatar_crop_left,
+                             layout.avatar_visible_width);
+  render_dialogue_bubble(layout);
   return layout;
 }
 
 void ScreenRenderer::clear_avatar_dialogue_content(
     const AvatarDialogueLayout& layout) {
-  const int x = layout.bubble_x + 4;
-  const int y = layout.bubble_y + 4;
-  const int w = std::max(0, layout.bubble_w - 8);
-  const int h = std::max(0, layout.bubble_h - 8);
+  const Rect content = insetRect(layout.bubble, 4);
+  const int x = content.x;
+  const int y = content.y;
+  const int w = content.w;
+  const int h = content.h;
   if (w <= 0 || h <= 0) {
     return;
   }
   M5.Display.fillRoundRect(x, y, w, h, 4, TFT_WHITE);
+}
+
+ScreenRenderer::Rect ScreenRenderer::checkingIndicatorRect() const {
+  const Rect battery = batteryRect(screenRect());
+  return Rect{
+      std::max(0, battery.x + battery.w + kCheckingIconGap -
+                      kCheckingIconClearPadding),
+      std::max(0, battery.y - 1 - kCheckingIconClearPadding),
+      kCheckingIconWidth + kCheckingIconClearPadding * 2,
+      kCheckingIconHeight + kCheckingIconClearPadding * 2,
+  };
+}
+
+void ScreenRenderer::render_checking_indicator(bool visible) {
+  const Rect rect = checkingIndicatorRect();
+  if (local_.checking_indicator_visible == visible) {
+    return;
+  }
+  local_.checking_indicator_visible = visible;
+
+  const uint16_t bg = avatarBackgroundColor();
+  const uint16_t fg = dialogueBorderColor();
+  M5.Display.fillRect(rect.x, rect.y, rect.w, rect.h, bg);
+  if (!visible) {
+    return;
+  }
+
+  const int icon_x = rect.x + kCheckingIconClearPadding;
+  const int icon_y = rect.y + kCheckingIconClearPadding;
+  const int cx = icon_x + kCheckingIconWidth / 2;
+  const int top = icon_y + 1;
+  const int bottom = icon_y + kCheckingIconHeight - 2;
+  M5.Display.drawFastVLine(cx - 2, top + 4, kCheckingIconHeight - 7, fg);
+  M5.Display.fillTriangle(cx - 5, top + 4, cx - 2, top, cx + 1, top + 4, fg);
+  M5.Display.drawFastVLine(cx + 2, top + 1, kCheckingIconHeight - 7, fg);
+  M5.Display.fillTriangle(cx - 1, bottom - 4, cx + 2, bottom, cx + 5, bottom - 4, fg);
+}
+
+void ScreenRenderer::render_dialogue_bubble(const AvatarDialogueLayout& layout) {
+  const uint16_t border = dialogueBorderColor();
+  M5.Display.fillRoundRect(layout.bubble.x,
+                           layout.bubble.y,
+                           layout.bubble.w,
+                           layout.bubble.h,
+                           7,
+                           TFT_WHITE);
+  M5.Display.drawRoundRect(layout.bubble.x,
+                           layout.bubble.y,
+                           layout.bubble.w,
+                           layout.bubble.h,
+                           7,
+                           border);
+  M5.Display.drawRoundRect(layout.bubble.x + 2,
+                           layout.bubble.y + 2,
+                           layout.bubble.w - 4,
+                           layout.bubble.h - 4,
+                           5,
+                           border);
+
+  if (layout.tail_direction != BubbleTailDirection::Top) {
+    return;
+  }
+
+  constexpr int kTailHalfWidth = 8;
+  M5.Display.fillTriangle(layout.tail.x - kTailHalfWidth,
+                          layout.bubble.y,
+                          layout.tail.x,
+                          layout.tail.y,
+                          layout.tail.x + kTailHalfWidth,
+                          layout.bubble.y,
+                          TFT_WHITE);
+  M5.Display.drawTriangle(layout.tail.x - kTailHalfWidth,
+                          layout.bubble.y,
+                          layout.tail.x,
+                          layout.tail.y,
+                          layout.tail.x + kTailHalfWidth,
+                          layout.bubble.y,
+                          border);
 }
 
 uint16_t ScreenRenderer::avatarBackgroundColor() const {
@@ -1017,7 +1298,11 @@ uint16_t ScreenRenderer::dialogueBorderColor() const {
   return M5.Display.color565(60, 55, 50);
 }
 
-uint16_t ScreenRenderer::avatarColor(char cell) const {
+uint16_t ScreenRenderer::avatarColor(uint8_t row, int col) const {
+  const char cell =
+      row < kZeroAvatarHeight && col >= 0 && col < static_cast<int>(kZeroAvatarWidth)
+          ? kZeroAvatar[row][col]
+          : 'B';
   switch (cell) {
     case 'O':
       return M5.Display.color565(235, 122, 35);
@@ -1025,8 +1310,12 @@ uint16_t ScreenRenderer::avatarColor(char cell) const {
       return M5.Display.color565(244, 206, 154);
     case 'K':
       return M5.Display.color565(60, 55, 50);
-    case 'W':
-      return TFT_WHITE;
+    case 'W': {
+      // White pixels outside the face are anti-aliased remnants from the source
+      // art; render them as transparent to avoid a halo around the avatar.
+      const bool face_highlight = row >= 23 && row <= 26 && col >= 29 && col <= 41;
+      return face_highlight ? TFT_WHITE : avatarBackgroundColor();
+    }
     case 'B':
     default:
       return avatarBackgroundColor();
@@ -1045,17 +1334,15 @@ uint8_t ScreenRenderer::batteryLevelBarsFor(int32_t level) const {
   if (clamped == 0) {
     return 0;
   }
-  return static_cast<uint8_t>(std::min<int32_t>(4, (clamped + 24) / 25));
+  return static_cast<uint8_t>(std::min<int32_t>(3, (clamped + 33) / 34));
 }
 
 size_t ScreenRenderer::readBodyTop() const {
-  return static_cast<size_t>(kReadPaddingTop + kReadHeaderHeight + 4);
+  return static_cast<size_t>(std::max(0, readLayout().body.y));
 }
 
 size_t ScreenRenderer::readViewportHeight() const {
-  return static_cast<size_t>(
-      std::max(1, M5.Display.height() - static_cast<int>(readBodyTop()) -
-                      static_cast<int>(kReadPaddingBottom)));
+  return static_cast<size_t>(std::max(1, readLayout().body.h));
 }
 
 void ScreenRenderer::renderWrappedChatText(const std::string& text,

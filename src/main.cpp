@@ -1805,7 +1805,7 @@ class HardwareRecordingOps : public RecordingOps {
 
   void showResult(const ModeRunResult& result) {
     if (result.status == ModeRunStatus::Completed) {
-      g_screen.render_screen_recording_sent();
+      g_screen.render_screen_recording_sent(sent_prompt_text_);
       Serial.println("recording completed");
       Serial.flush();
       restartAwareDelay(5000);
@@ -1944,6 +1944,7 @@ class HardwareRecordingOps : public RecordingOps {
     }
     setRecordingFailureDetail("");
     const std::string prompt_text = zero_buddy::preprocessAssistantForDisplay(text);
+    sent_prompt_text_ = prompt_text;
     g_screen.render_screen_recording_sending(prompt_text);
     const String body =
         String("{\"prompt\":\"") + jsonEscape(String(prompt_text.c_str())) +
@@ -2053,6 +2054,7 @@ class HardwareRecordingOps : public RecordingOps {
 
   const char* recording_failure_detail_ = "";
   String recording_failure_detail_storage_;
+  std::string sent_prompt_text_;
 };
 
 void enterDeepSleep();
@@ -2158,6 +2160,7 @@ void runPluggedCheckOnce() {
   cancelCheckTimers();
   g_screen.render_screen_checking_messages();
   const CheckRunResult check_result = runCheckAssistantOnce();
+  g_screen.clear_checking_messages_indicator();
   if (check_result == CheckRunResult::RecordingRequested) {
     runRecordingOnce();
   }

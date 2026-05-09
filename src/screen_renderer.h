@@ -31,10 +31,11 @@ class ScreenRenderer {
   void render_screen_recording_wifi();
   void render_screen_recording_transcribing();
   void render_screen_recording_sending(const std::string& user_text);
-  void render_screen_recording_sent();
+  void render_screen_recording_sent(const std::string& user_text);
   void render_screen_recording_aborted();
   void render_screen_recording_failed(const char* detail);
   void render_screen_checking_messages();
+  void clear_checking_messages_indicator();
   void render_screen_setup_wifi();
   void render_screen_setup_device_code(const char* device_code);
   void render_screen_setup_status(const char* line1, const char* line2);
@@ -67,18 +68,55 @@ class ScreenRenderer {
   struct LocalState {
     uint8_t battery_bars = 0xFF;
     bool battery_visible = false;
+    bool checking_indicator_visible = false;
     bool battery_followup_refresh_scheduled = false;
     uint32_t battery_followup_due_ms = 0;
   };
 
+  struct Rect {
+    Rect() = default;
+    Rect(int x_value, int y_value, int w_value, int h_value)
+        : x(x_value), y(y_value), w(w_value), h(h_value) {}
+
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+  };
+
+  struct Point {
+    Point() = default;
+    Point(int x_value, int y_value) : x(x_value), y(y_value) {}
+
+    int x = 0;
+    int y = 0;
+  };
+
+  enum class BubbleTailDirection : uint8_t {
+    Top,
+    Right,
+  };
+
   struct AvatarDialogueLayout {
-    int avatar_x = 0;
-    int avatar_y = 0;
-    int bubble_x = 0;
-    int bubble_y = 0;
-    int bubble_w = 0;
-    int bubble_h = 0;
-    int tail_y = 0;
+    Rect screen;
+    Rect top_bar;
+    Rect avatar;
+    Rect bubble;
+    Rect battery;
+    Point tail;
+    BubbleTailDirection tail_direction = BubbleTailDirection::Top;
+    uint8_t avatar_scale = 1;
+    int avatar_crop_left = 0;
+    int avatar_visible_width = 0;
+  };
+
+  struct ReadLayout {
+    Rect screen;
+    Rect top_bar;
+    Rect header;
+    Rect body;
+    Rect battery;
+    int divider_y = 0;
   };
 
   state::RenderScreenState currentRenderState() const;
@@ -131,13 +169,22 @@ class ScreenRenderer {
   bool canReuseAvatarDialogueShell(const state::RenderScreenState& previous,
                                    uint8_t avatar_scale) const;
   AvatarDialogueLayout avatarDialogueLayout(uint8_t avatar_scale) const;
+  ReadLayout readLayout() const;
+  Rect screenRect() const;
+  Rect insetRect(const Rect& rect, int inset) const;
+  Rect batteryRect(const Rect& screen) const;
+  Rect topBarAvatarRect(const Rect& screen, uint8_t avatar_scale) const;
+  uint8_t effectiveAvatarScale(uint8_t requested_scale) const;
   AvatarDialogueLayout render_avatar_dialogue_shell(uint8_t avatar_scale,
                                                     bool reuse_shell = false);
   void clear_avatar_dialogue_content(const AvatarDialogueLayout& layout);
+  void render_dialogue_bubble(const AvatarDialogueLayout& layout);
+  void render_checking_indicator(bool visible);
+  Rect checkingIndicatorRect() const;
 
   uint16_t avatarBackgroundColor() const;
   uint16_t dialogueBorderColor() const;
-  uint16_t avatarColor(char cell) const;
+  uint16_t avatarColor(uint8_t row, int col) const;
   uint8_t batteryLevelBars() const;
   uint8_t batteryLevelBarsFor(int32_t level) const;
   size_t readBodyTop() const;

@@ -123,6 +123,7 @@ class ReadOps {
 
   virtual void screenOn() = 0;
   virtual void setCpuForReading() = 0;
+  virtual void setCpuForReadInteraction() = 0;
   virtual size_t storedAssistantMessageCount() = 0;
   virtual bool loadReadProgress(ReadProgress* progress_out) = 0;
   virtual bool loadAssistantMessage(size_t index, std::string* message_out) = 0;

@@ -11,6 +11,7 @@ namespace zero_buddy {
 namespace screen {
 
 constexpr uint32_t kBatteryFollowupRefreshMs = 5000;
+constexpr uint32_t kBatteryIconRefreshMs = 1000;
 
 class ScreenRenderer {
  public:
@@ -63,6 +64,7 @@ class ScreenRenderer {
   void scheduleBatteryFollowupRefresh(uint32_t now_ms,
                                       uint32_t delay_ms = kBatteryFollowupRefreshMs);
   void renderBatteryFollowupIfDue(uint32_t now_ms);
+  void renderBatteryRefreshIfDue(uint32_t now_ms);
   void tickAvatarAnimation(uint32_t now_ms);
 
   size_t maxScrollTopForMessage(const std::string& message) const;
@@ -72,12 +74,12 @@ class ScreenRenderer {
  private:
   struct LocalState {
     uint8_t battery_bars = 0xFF;
-    int16_t battery_percent = -2;
-    bool battery_percent_mode = false;
     bool battery_visible = false;
     bool checking_indicator_visible = false;
     bool battery_followup_refresh_scheduled = false;
     uint32_t battery_followup_due_ms = 0;
+    bool battery_icon_refresh_scheduled = false;
+    uint32_t battery_icon_due_ms = 0;
     mutable bool wrapped_text_height_cache_valid = false;
     mutable uint32_t wrapped_text_height_cache_hash = 0;
     mutable size_t wrapped_text_height_cache_size = 0;
@@ -212,9 +214,7 @@ class ScreenRenderer {
   void startAvatarAnimation(const AvatarDialogueLayout& layout, uint32_t now_ms);
   void stopAvatarAnimation();
   void renderAvatarAnimationFrame(uint8_t frame);
-  bool batteryPercentMode() const;
   int16_t batteryLevelPercent() const;
-  uint8_t batteryLevelBars() const;
   uint8_t batteryLevelBarsFor(int32_t level) const;
   size_t readBodyTop() const;
   size_t readViewportHeight() const;

@@ -242,16 +242,27 @@ ModeRunResult ReadMode::main() {
     }
   }
 
+  bool read_interaction_cpu_active = false;
+  auto restore_reading_cpu = [&]() {
+    if (read_interaction_cpu_active) {
+      ops_->setCpuForReading();
+      read_interaction_cpu_active = false;
+    }
+  };
+
   while (!shouldStop()) {
     std::string message;
     if (!loadCurrentMessage(progress.messageIndex, &message)) {
+      restore_reading_cpu();
       return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantStorageFailed);
     }
     if (!clampAndPersistProgress(count, message, &progress)) {
+      restore_reading_cpu();
       return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantStorageFailed);
     }
 
     ops_->renderAssistantMessage(progress.messageIndex, count, message, progress.scrollTop);
+    restore_reading_cpu();
     if (shouldStop()) {
       return abortedResult();
     }
@@ -267,6 +278,9 @@ ModeRunResult ReadMode::main() {
       return abortedResult();
     }
 
+    ops_->setCpuForReadInteraction();
+    read_interaction_cpu_active = true;
+
     const size_t max_scroll_top = ops_->maxScrollTopForMessage(message);
     if (progress.scrollTop < max_scroll_top) {
       const size_t configured_step = ops_->scrollStep();
@@ -278,12 +292,15 @@ ModeRunResult ReadMode::main() {
       progress.scrollTop = 0;
     } else {
       if (!ops_->clearAssistantMessages()) {
+        restore_reading_cpu();
         return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantClearFailed);
       }
+      restore_reading_cpu();
       return renderEmptyUntilIdle();
     }
 
     if (!persistProgress(count, progress)) {
+      restore_reading_cpu();
       return shouldStop() ? abortedResult() : failed(ModeRunError::AssistantStorageFailed);
     }
   }

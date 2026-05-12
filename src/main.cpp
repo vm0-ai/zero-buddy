@@ -80,7 +80,8 @@ constexpr uint32_t kBootSplashMs = 3000;
 constexpr uint32_t kWifiConnectAttemptMs = 12000;
 constexpr uint8_t kRecordingCpuMhz = 240;
 constexpr uint8_t kNetworkCpuMhz = 80;
-constexpr uint8_t kReadCpuMhz = 160;
+constexpr uint8_t kReadCpuMhz = 80;
+constexpr uint8_t kReadInteractionCpuMhz = 160;
 constexpr size_t kMaxAssistantMessages = 5;
 constexpr size_t kMaxAssistantMessageBytes = 4096;
 
@@ -109,7 +110,7 @@ constexpr size_t kMaxThreadIdChars = 96;
 constexpr size_t kMaxLastMessageIdChars = zero_buddy::state::kLastMessageIdBytes - 1;
 constexpr size_t kMaxPollTokenChars = 512;
 constexpr uint32_t kProvisioningConnectAttemptMs = 20000;
-constexpr uint32_t kPowerEventPollMs = 3000;
+constexpr uint32_t kPowerEventPollMs = 1000;
 constexpr char kBb0BleServiceUuid[] = "bb000001-8f16-4b2a-9bb0-000000000001";
 constexpr char kBb0BleInfoUuid[] = "bb000002-8f16-4b2a-9bb0-000000000001";
 constexpr char kBb0BleConfigUuid[] = "bb000003-8f16-4b2a-9bb0-000000000001";
@@ -300,64 +301,12 @@ const char* chargeStateName(zero_buddy::power::ChargeState state) {
   }
 }
 
-bool isExternalM5Pm1PowerSource(uint8_t source_bits) {
-  return zero_buddy::power::m5pm1PowerSourceHasExternal(source_bits);
-}
-
-const char* m5pm1PowerSourceName(int8_t source_bits) {
-  switch (source_bits) {
-    case 0x00:
-      return "none";
-    case 0x01:
-      return "5vin";
-    case 0x02:
-      return "5vinout";
-    case 0x03:
-      return "5vin+5vinout";
-    case 0x04:
-      return "bat";
-    case 0x05:
-      return "5vin+bat";
-    case 0x06:
-      return "5vinout+bat";
-    case 0x07:
-      return "5vin+5vinout+bat";
-    default:
-      return "invalid";
-  }
-}
-
-uint8_t readM5Pm1PowerSourceBits() {
-  if (!g_pm1_ready) {
-    return 0;
-  }
-  m5pm1_pwr_src_t source = M5PM1_PWR_SRC_UNKNOWN;
-  const auto result = g_pm1.getPowerSource(&source);
-  if (result != M5PM1_OK) {
-    Serial.printf("power source read failed: %d\n", static_cast<int>(result));
-    return 0;
-  }
-  return static_cast<uint8_t>(source) & 0x07;
-}
-
-int16_t clampBatteryPercent(int32_t level) {
-  if (level < 0) {
-    return -1;
-  }
-  return static_cast<int16_t>(std::max<int32_t>(0, std::min<int32_t>(100, level)));
-}
-
 zero_buddy::power::PowerSnapshot readM5UnifiedPowerSnapshot() {
   zero_buddy::power::PowerSnapshot snapshot;
-  snapshot.battery_percent = clampBatteryPercent(M5.Power.getBatteryLevel());
-  snapshot.battery_mv = M5.Power.getBatteryVoltage();
-  snapshot.battery_current_ma = M5.Power.getBatteryCurrent();
-  snapshot.vbus_mv = M5.Power.getVBUSVoltage();
+  const int32_t level = M5.Power.getBatteryLevel();
+  snapshot.battery_percent =
+      level < 0 ? static_cast<int16_t>(-1) : static_cast<int16_t>(level);
   snapshot.charge_state = toPowerChargeState(M5.Power.isCharging());
-  const uint8_t power_source = readM5Pm1PowerSourceBits();
-  snapshot.power_source = static_cast<int8_t>(power_source);
-  snapshot.external_power = isExternalM5Pm1PowerSource(power_source);
-  snapshot.charge_enabled = true;
   return snapshot;
 }
 
@@ -370,22 +319,11 @@ void applyPowerSnapshot(const zero_buddy::power::PowerSnapshot& snapshot) {
 void logPowerSnapshot(const char* prefix,
                       const zero_buddy::power::PowerSnapshot& snapshot) {
   Serial.print(prefix);
-  Serial.print(" external=");
-  Serial.print(snapshot.external_power ? 1 : 0);
   Serial.print(" charge=");
   Serial.print(chargeStateName(snapshot.charge_state));
   Serial.print(" batt=");
   Serial.print(static_cast<int>(snapshot.battery_percent));
-  Serial.print("% batt_mv=");
-  Serial.print(static_cast<int>(snapshot.battery_mv));
-  Serial.print(" batt_ma=");
-  Serial.print(static_cast<int>(snapshot.battery_current_ma));
-  Serial.print(" vbus=");
-  Serial.print(static_cast<int>(snapshot.vbus_mv));
-  Serial.print(" src=");
-  Serial.print(m5pm1PowerSourceName(snapshot.power_source));
-  Serial.print(" charge_en=");
-  Serial.println(snapshot.charge_enabled ? 1 : 0);
+  Serial.println("%");
 }
 
 bool refreshPowerSnapshot(bool force) {
@@ -401,10 +339,8 @@ bool refreshPowerSnapshot(bool force) {
       next);
   const bool should_log =
       !g_power_snapshot_valid ||
-      events.external_power_changed ||
       events.charge_state_changed ||
-      events.battery_percent_changed ||
-      events.low_battery_changed;
+      events.battery_percent_changed;
   applyPowerSnapshot(next);
   g_last_power_poll_ms = now;
 
@@ -428,6 +364,7 @@ void pollControls() {
   handleBrightnessButton();
   handleResetButton();
   refreshPowerSnapshot(false);
+  g_screen.renderBatteryRefreshIfDue(millis());
   g_screen.tickAvatarAnimation(millis());
 }
 
@@ -465,7 +402,7 @@ bool waitForBtnALongPress(uint32_t hold_ms) {
 
 bool externalPowerConnected() {
   refreshPowerSnapshot(true);
-  return g_power_snapshot.external_power;
+  return g_power_snapshot.charge_state == zero_buddy::power::ChargeState::Charging;
 }
 
 const char* modeRunErrorName(ModeRunError error) {
@@ -1015,13 +952,8 @@ bool connectWifiCredentials(const String& ssid,
   WiFi.disconnect(true, true);
   restartAwareDelay(100);
   WiFi.mode(WIFI_STA);
-  if (g_ble_started) {
-    WiFi.setSleep(true);
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-  } else {
-    WiFi.setSleep(false);
-    esp_wifi_set_ps(WIFI_PS_NONE);
-  }
+  WiFi.setSleep(true);
+  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   WiFi.begin(ssid.c_str(), password.c_str());
   const uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < timeout_ms) {
@@ -1992,6 +1924,10 @@ class HardwareReadOps : public ReadOps {
     setCpu(kReadCpuMhz);
   }
 
+  void setCpuForReadInteraction() override {
+    setCpu(kReadInteractionCpuMhz);
+  }
+
   size_t storedAssistantMessageCount() override {
     return assistant_message_count();
   }
@@ -2497,7 +2433,7 @@ void setup() {
   const auto previous_mode =
       had_rtc_state ? g_state.currentMode : zero_buddy::state::Mode::DeepSleep;
 
-  setCpu(kRecordingCpuMhz);
+  setCpu(kNetworkCpuMhz);
   LittleFS.begin(true);
   ensureGlobalStateInitialized();
   restoreBacklightStep();

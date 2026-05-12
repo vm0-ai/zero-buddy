@@ -6,6 +6,7 @@
 #include "spleen_8x16.h"
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 namespace zero_buddy {
@@ -44,7 +45,6 @@ constexpr int kTopBarBottomGap = 5;
 constexpr int kBatteryBodyWidth = 15;
 constexpr int kBatteryBodyHeight = 10;
 constexpr int kBatteryCapWidth = 2;
-constexpr int kBatteryPercentWidth = 28;
 constexpr int kBatteryClearHeight = 13;
 constexpr int kCheckingIconWidth = 10;
 constexpr int kCheckingIconHeight = 14;
@@ -288,7 +288,7 @@ void drawFittedChatLine(const char* text,
 }
 
 constexpr TinyFontGlyph kTinyFont[] = {
-    {'0', {0x3E, 0x49, 0x49, 0x49, 0x3E}},
+    {'0', {0x3E, 0x51, 0x49, 0x45, 0x3E}},
     {'1', {0x00, 0x42, 0x7F, 0x40, 0x00}},
     {'2', {0x62, 0x51, 0x49, 0x49, 0x46}},
     {'3', {0x22, 0x41, 0x49, 0x49, 0x36}},
@@ -634,6 +634,27 @@ int tinyFontTextWidth(const char* text, int scale, int spacing) {
   return width;
 }
 
+size_t splitInstructionDetailLines(const char* text,
+                                   String* line1,
+                                   String* line2) {
+  if (line1 == nullptr || line2 == nullptr) {
+    return 0;
+  }
+  *line1 = "";
+  *line2 = "";
+  if (text == nullptr || text[0] == '\0') {
+    return 0;
+  }
+  const char* newline = strchr(text, '\n');
+  if (newline == nullptr) {
+    *line1 = text;
+    return 1;
+  }
+  *line1 = String(text).substring(0, newline - text);
+  *line2 = newline + 1;
+  return line2->length() > 0 ? 2 : 1;
+}
+
 String uppercaseAscii(const char* text) {
   String out(text != nullptr ? text : "");
   for (size_t i = 0; i < out.length(); ++i) {
@@ -827,7 +848,7 @@ void ScreenRenderer::render_screen_setup_wifi() {
   render_avatar_layout_instruction(state::RenderScreenKind::SetupWifi,
                                    "visit",
                                    "BB0.AI",
-                                   "in Google Chrome",
+                                   "in Chrome",
                                    kTinyFontScale);
 }
 
@@ -846,17 +867,11 @@ void ScreenRenderer::render_screen_setup_status(const char* line1, const char* l
 
 void ScreenRenderer::render_element_battery_level() {
   const int16_t percent = batteryLevelPercent();
-  const bool percent_mode = batteryPercentMode();
   const uint8_t bars = batteryLevelBarsFor(percent);
-  if (local_.battery_visible &&
-      local_.battery_percent_mode == percent_mode &&
-      ((percent_mode && local_.battery_percent == percent) ||
-       (!percent_mode && local_.battery_bars == bars))) {
+  if (local_.battery_visible && local_.battery_bars == bars) {
     return;
   }
   local_.battery_visible = true;
-  local_.battery_percent_mode = percent_mode;
-  local_.battery_percent = percent;
   local_.battery_bars = bars;
 
   const uint16_t bg = avatarBackgroundColor();
@@ -871,16 +886,6 @@ void ScreenRenderer::render_element_battery_level() {
                       layout.battery.w + 2,
                       kBatteryClearHeight,
                       bg);
-
-  if (percent_mode) {
-    M5.Display.setTextColor(fg, bg);
-    M5.Display.setTextWrap(false);
-    M5.Display.setFont(&fonts::Font0);
-    const String text = percent < 0 ? String("--%") : String(percent) + "%";
-    M5.Display.setCursor(x, y + 1);
-    M5.Display.print(text);
-    return;
-  }
 
   M5.Display.drawRect(x, y, kBatteryBodyWidth, kBatteryBodyHeight, fg);
   M5.Display.fillRect(x + kBatteryBodyWidth, y + 3, kBatteryCapWidth, 4, fg);
@@ -982,16 +987,22 @@ void ScreenRenderer::render_element_instruction_text(const char* line1,
   const int text_x = bubble_x + 9;
   const int text_w = bubble_w - 18;
   constexpr int kTitleHeight = 20;
-  constexpr int kDetailHeight = 20;
+  constexpr int kDetailLineHeight = 18;
+  String detail_line1;
+  String detail_line2;
+  const size_t detail_line_count =
+      splitInstructionDetailLines(line3, &detail_line1, &detail_line2);
+  const int detail_h =
+      static_cast<int>(std::max<size_t>(1, detail_line_count)) * kDetailLineHeight;
   const int max_block_h = std::max(1, bubble_h - 10);
   while (emphasis_scale > 1) {
     const int emphasis_h = kTinyFontGlyphHeight * emphasis_scale;
     const int gap = std::max(4,
                              std::min(12,
-                                      (max_block_h - kTitleHeight - kDetailHeight -
+                                      (max_block_h - kTitleHeight - detail_h -
                                        emphasis_h) /
                                           2));
-    if (kTitleHeight + emphasis_h + kDetailHeight + gap * 2 <= max_block_h) {
+    if (kTitleHeight + emphasis_h + detail_h + gap * 2 <= max_block_h) {
       break;
     }
     --emphasis_scale;
@@ -1000,11 +1011,12 @@ void ScreenRenderer::render_element_instruction_text(const char* line1,
   const int instruction_gap =
       std::max(4,
                std::min(12,
-                        (max_block_h - kTitleHeight - kDetailHeight - emphasis_h) /
+                        (max_block_h - kTitleHeight - detail_h - emphasis_h) /
                             2));
-  const int block_h = kTitleHeight + emphasis_h + kDetailHeight +
-                      instruction_gap * 2;
+  const int block_h = kTitleHeight + emphasis_h + detail_h + instruction_gap * 2;
   const int block_y = bubble_y + std::max(0, (bubble_h - block_h) / 2);
+  const int detail_y =
+      block_y + kTitleHeight + instruction_gap + emphasis_h + instruction_gap;
 
   auto drawCenteredTiny = [&](const char* text, int y, uint8_t scale) {
     const int text_width =
@@ -1019,11 +1031,15 @@ void ScreenRenderer::render_element_instruction_text(const char* line1,
                    block_y + kTitleHeight + instruction_gap,
                    emphasis_scale);
   M5.Display.setFont(&fonts::Font2);
-  printCenteredFittedLine(line3,
-                          text_x,
-                          block_y + kTitleHeight + instruction_gap +
-                              emphasis_h + instruction_gap,
-                          text_w);
+  if (detail_line_count > 0) {
+    printCenteredFittedLine(detail_line1.c_str(), text_x, detail_y, text_w);
+  }
+  if (detail_line_count > 1) {
+    printCenteredFittedLine(detail_line2.c_str(),
+                            text_x,
+                            detail_y + kDetailLineHeight,
+                            text_w);
+  }
 }
 
 void ScreenRenderer::render_element_status_pair_text(const char* title,
@@ -1159,6 +1175,22 @@ void ScreenRenderer::renderBatteryFollowupIfDue(uint32_t now_ms) {
   render_element_battery_level();
 }
 
+void ScreenRenderer::renderBatteryRefreshIfDue(uint32_t now_ms) {
+  if (!screen_on_) {
+    local_.battery_icon_refresh_scheduled = false;
+    return;
+  }
+
+  if (local_.battery_icon_refresh_scheduled &&
+      static_cast<int32_t>(now_ms - local_.battery_icon_due_ms) < 0) {
+    return;
+  }
+
+  local_.battery_icon_due_ms = now_ms + kBatteryIconRefreshMs;
+  local_.battery_icon_refresh_scheduled = true;
+  render_element_battery_level();
+}
+
 void ScreenRenderer::tickAvatarAnimation(uint32_t now_ms) {
   if (!screen_on_ || !avatar_animation_.active ||
       !isAvatarDialogueScreenKind(currentRenderState().kind)) {
@@ -1249,10 +1281,9 @@ bool ScreenRenderer::sameRenderState(const state::RenderScreenState& next) const
 
 void ScreenRenderer::resetElementState() {
   local_.battery_bars = 0xFF;
-  local_.battery_percent = -2;
-  local_.battery_percent_mode = false;
   local_.battery_visible = false;
   local_.checking_indicator_visible = false;
+  local_.battery_icon_refresh_scheduled = false;
 }
 
 bool ScreenRenderer::prepare_avatar_dialogue_screen(
@@ -1415,7 +1446,7 @@ ScreenRenderer::Rect ScreenRenderer::batteryRect(const Rect& screen) const {
   return Rect{
       kReadPaddingLeft,
       kReadPaddingTop + 1,
-      std::max(kBatteryBodyWidth + kBatteryCapWidth, kBatteryPercentWidth),
+      kBatteryBodyWidth + kBatteryCapWidth,
       kBatteryClearHeight,
   };
 }
@@ -1712,21 +1743,12 @@ void ScreenRenderer::renderAvatarAnimationFrame(uint8_t frame) {
   }
 }
 
-bool ScreenRenderer::batteryPercentMode() const {
-  return power_snapshot_valid_ &&
-         power::shouldShowBatteryPercent(power_snapshot_);
-}
-
 int16_t ScreenRenderer::batteryLevelPercent() const {
   if (!power_snapshot_valid_ || power_snapshot_.battery_percent < 0) {
     return -1;
   }
   return static_cast<int16_t>(
       std::max<int32_t>(0, std::min<int32_t>(100, power_snapshot_.battery_percent)));
-}
-
-uint8_t ScreenRenderer::batteryLevelBars() const {
-  return batteryLevelBarsFor(batteryLevelPercent());
 }
 
 uint8_t ScreenRenderer::batteryLevelBarsFor(int32_t level) const {

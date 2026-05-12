@@ -192,6 +192,10 @@ struct FakeReadOps : ReadOps {
     }
   }
 
+  void setCpuForReadInteraction() override {
+    calls.push_back("cpu-read-interaction");
+  }
+
   size_t storedAssistantMessageCount() override {
     calls.push_back("count");
     if (on_count) {
@@ -653,8 +657,8 @@ void test_read_main_renders_saved_progress_and_scrolls_on_short_press() {
 
   TEST_ASSERT_EQUAL_STRING(
       "screen-on,cpu-read,count,load-progress,load:0,max-scroll,render:0:20,"
-      "wait:15000,max-scroll,scroll-step,save:1:0:60,load:0,max-scroll,"
-      "render:0:60,wait:15000",
+      "wait:15000,cpu-read-interaction,max-scroll,scroll-step,save:1:0:60,"
+      "load:0,max-scroll,render:0:60,cpu-read,wait:15000",
       joinCalls(ops.calls).c_str());
   TEST_ASSERT_TRUE(zero_buddy::state::hasAssistantMessage(state));
   TEST_ASSERT_EQUAL_UINT(0, ops.progress.messageIndex);
@@ -695,7 +699,8 @@ void test_read_main_completes_when_last_message_is_fully_read() {
 
   TEST_ASSERT_EQUAL_STRING(
       "screen-on,cpu-read,count,load-progress,load:0,max-scroll,render:0:100,"
-      "wait:15000,max-scroll,clear-assistant-message,render-empty,wait:15000",
+      "wait:15000,cpu-read-interaction,max-scroll,clear-assistant-message,"
+      "cpu-read,render-empty,wait:15000",
       joinCalls(ops.calls).c_str());
 }
 

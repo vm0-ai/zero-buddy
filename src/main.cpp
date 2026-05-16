@@ -2169,6 +2169,11 @@ class HardwareRecordingOps : public RecordingOps {
     }
     setRecordingFailureDetail("");
     const std::string prompt_text = zero_buddy::preprocessAssistantForDisplay(text);
+    if (prompt_text.empty()) {
+      Serial.println("message send aborted: empty prompt after preprocess");
+      setRecordingFailureDetail("empty-prompt");
+      return false;
+    }
     sent_prompt_text_ = prompt_text;
     g_screen.render_screen_recording_sending(prompt_text);
     const bool sent_thread_id = config.hasThreadId();
@@ -2191,27 +2196,41 @@ class HardwareRecordingOps : public RecordingOps {
                   config.thread_id_from_compile
                       ? "compiled"
                       : (config.thread_id_from_nvs ? "nvs" : "none"));
-    if (!httpPostJsonRequest(kZeroPostUrl,
-                             body,
-                             config.auth_token,
-                             &http_response,
-                             nullptr)) {
-      Serial.printf("message send http code=%d\n", http_response.status_code);
+    const bool sent_ok = httpPostJsonRequest(kZeroPostUrl,
+                                             body,
+                                             config.auth_token,
+                                             &http_response,
+                                             nullptr);
+    if (http_response.status_code > 0) {
+      Serial.printf("message send http code=%d body_len=%u\n",
+                    http_response.status_code,
+                    static_cast<unsigned>(http_response.body.length()));
       if (http_response.body.length() > 0) {
         Serial.print("message send response: ");
         Serial.println(http_response.body.substring(0, 240));
       }
+    }
+    if (!sent_ok) {
       if (http_response.status_code == 400 || http_response.status_code == 404) {
         Serial.println("message send thread invalid, retrying without threadId");
         const String repair_body =
             String("{\"prompt\":\"") + jsonEscape(String(prompt_text.c_str())) + "\"}";
         HttpResponse repair_response;
-        if (httpPostJsonRequest(kZeroPostUrl,
-                                repair_body,
-                                config.auth_token,
-                                &repair_response,
-                                nullptr)) {
-          Serial.printf("message send repair http code=%d\n", repair_response.status_code);
+        const bool repair_ok = httpPostJsonRequest(kZeroPostUrl,
+                                                   repair_body,
+                                                   config.auth_token,
+                                                   &repair_response,
+                                                   nullptr);
+        if (repair_response.status_code > 0) {
+          Serial.printf("message send repair http code=%d body_len=%u\n",
+                        repair_response.status_code,
+                        static_cast<unsigned>(repair_response.body.length()));
+          if (repair_response.body.length() > 0) {
+            Serial.print("message send repair response: ");
+            Serial.println(repair_response.body.substring(0, 240));
+          }
+        }
+        if (repair_ok) {
           const std::string repair_message_id =
               zero_buddy::extractJsonString(repair_response.body.c_str(), "messageId");
           const String repair_thread_id =
@@ -2229,13 +2248,6 @@ class HardwareRecordingOps : public RecordingOps {
           }
           Serial.print("message send repair invalid response: ");
           Serial.println(repair_response.body.substring(0, 240));
-        } else {
-          Serial.printf("message send repair http code=%d\n",
-                        repair_response.status_code);
-          if (repair_response.body.length() > 0) {
-            Serial.print("message send repair response: ");
-            Serial.println(repair_response.body.substring(0, 240));
-          }
         }
       }
       String detail("http:");
@@ -2243,7 +2255,6 @@ class HardwareRecordingOps : public RecordingOps {
       setRecordingFailureDetail(detail);
       return false;
     }
-    Serial.printf("message send http code=%d\n", http_response.status_code);
     const std::string id =
         zero_buddy::extractJsonString(http_response.body.c_str(), "messageId");
     if (id.empty()) {

@@ -21,6 +21,39 @@ void test_zero_messages_response_parsing() {
   TEST_ASSERT_TRUE(messages.assistant_messages[0].find("🚀") == std::string::npos);
 }
 
+void test_zero_messages_skip_assistant_errors_but_advance_cursor() {
+  const std::string zero_json =
+      R"({"messages":[)"
+      R"({"id":"assistant-error","role":"assistant","content":"try later","error":"rate limited","createdAt":"2026-04-24T00:00:00Z"}]})";
+
+  const auto messages = zero_buddy::parseZeroMessagesResponse(zero_json);
+  TEST_ASSERT_TRUE(messages.found_any);
+  TEST_ASSERT_EQUAL_STRING("assistant-error", messages.newest_message_id.c_str());
+  TEST_ASSERT_EQUAL_UINT(0, messages.assistant_messages.size());
+}
+
+void test_zero_messages_skip_null_assistant_content() {
+  const std::string zero_json =
+      R"({"messages":[)"
+      R"({"id":"assistant-null","role":"assistant","content":null,"createdAt":"2026-04-24T00:00:00Z"}]})";
+
+  const auto messages = zero_buddy::parseZeroMessagesResponse(zero_json);
+  TEST_ASSERT_TRUE(messages.found_any);
+  TEST_ASSERT_EQUAL_STRING("assistant-null", messages.newest_message_id.c_str());
+  TEST_ASSERT_EQUAL_UINT(0, messages.assistant_messages.size());
+}
+
+void test_zero_messages_skip_empty_preprocessed_assistant_content() {
+  const std::string zero_json =
+      R"({"messages":[)"
+      R"({"id":"assistant-empty","role":"assistant","content":"🚀","createdAt":"2026-04-24T00:00:00Z"}]})";
+
+  const auto messages = zero_buddy::parseZeroMessagesResponse(zero_json);
+  TEST_ASSERT_TRUE(messages.found_any);
+  TEST_ASSERT_EQUAL_STRING("assistant-empty", messages.newest_message_id.c_str());
+  TEST_ASSERT_EQUAL_UINT(0, messages.assistant_messages.size());
+}
+
 void test_boot_repair_actions() {
   auto action =
       zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::WifiUnavailable);
@@ -116,6 +149,9 @@ void test_persistent_cursor_selects_only_matching_thread() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_zero_messages_response_parsing);
+  RUN_TEST(test_zero_messages_skip_assistant_errors_but_advance_cursor);
+  RUN_TEST(test_zero_messages_skip_null_assistant_content);
+  RUN_TEST(test_zero_messages_skip_empty_preprocessed_assistant_content);
   RUN_TEST(test_boot_repair_actions);
   RUN_TEST(test_provisioning_service_data_encoding);
   RUN_TEST(test_assistant_queue_manifest_round_trip);

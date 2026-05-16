@@ -779,6 +779,8 @@ void restoreBacklightStep() {
 void clearPersistentLastMessageCursor() {
   removeRuntimeConfigKey(kRuntimeLastMessageIdKey);
   removeRuntimeConfigKey(kRuntimeLastMessageThreadIdKey);
+  zero_buddy::state::clearLastMessageId(&g_state);
+  zero_buddy::state::resetCheckDelay(&g_state);
 }
 
 bool persistLastMessageCursorForCurrentThread(const std::string& message_id) {
@@ -842,7 +844,6 @@ bool saveRuntimeThreadId(const String& thread_id) {
 void clearRuntimeThreadId() {
   removeRuntimeConfigKey(kRuntimeThreadIdKey);
   clearPersistentLastMessageCursor();
-  zero_buddy::state::clearLastMessageId(&g_state);
   clear_assistant_message();
 }
 
@@ -2156,7 +2157,7 @@ class HardwareRecordingOps : public RecordingOps {
 
   bool sendTextMessage(const std::string& text, std::string* user_message_id_out) override {
     const RuntimeConfig config = loadRuntimeConfig();
-    if (user_message_id_out == nullptr || text.empty() || !config.hasThreadId()) {
+    if (user_message_id_out == nullptr || text.empty() || !config.hasAuthToken()) {
       setRecordingFailureDetail("bad-message");
       return false;
     }
@@ -2164,9 +2165,12 @@ class HardwareRecordingOps : public RecordingOps {
     const std::string prompt_text = zero_buddy::preprocessAssistantForDisplay(text);
     sent_prompt_text_ = prompt_text;
     g_screen.render_screen_recording_sending(prompt_text);
-    const String body =
-        String("{\"prompt\":\"") + jsonEscape(String(prompt_text.c_str())) +
-        "\",\"threadId\":\"" + config.thread_id + "\"}";
+    const bool sent_thread_id = config.hasThreadId();
+    String body = String("{\"prompt\":\"") + jsonEscape(String(prompt_text.c_str())) + "\"";
+    if (sent_thread_id) {
+      body += String(",\"threadId\":\"") + jsonEscape(config.thread_id) + "\"";
+    }
+    body += "}";
     HttpResponse http_response;
     Serial.printf("message send raw prompt bytes=%u\n", static_cast<unsigned>(text.size()));
     Serial.printf("message send prompt bytes=%u\n",
@@ -2191,7 +2195,7 @@ class HardwareRecordingOps : public RecordingOps {
         Serial.print("message send response: ");
         Serial.println(http_response.body.substring(0, 240));
       }
-      if (http_response.status_code == 404) {
+      if (http_response.status_code == 400 || http_response.status_code == 404) {
         Serial.println("message send thread invalid, retrying without threadId");
         const String repair_body =
             String("{\"prompt\":\"") + jsonEscape(String(prompt_text.c_str())) + "\"}";
@@ -2211,6 +2215,9 @@ class HardwareRecordingOps : public RecordingOps {
           if (!repair_message_id.empty() && repair_thread_id.length() > 0 &&
               repair_thread_id.length() <= kMaxThreadIdChars &&
               saveRuntimeThreadId(repair_thread_id)) {
+            if (http_response.status_code == 400) {
+              clearPersistentLastMessageCursor();
+            }
             *user_message_id_out = repair_message_id;
             return true;
           }
@@ -2240,6 +2247,17 @@ class HardwareRecordingOps : public RecordingOps {
       return false;
     }
     *user_message_id_out = id;
+    if (!sent_thread_id) {
+      const String response_thread_id =
+          String(zero_buddy::extractJsonString(http_response.body.c_str(), "threadId").c_str());
+      if (response_thread_id.length() > 0 &&
+          response_thread_id.length() <= kMaxThreadIdChars) {
+        saveRuntimeThreadId(response_thread_id);
+      } else {
+        Serial.print("message send missing threadId response: ");
+        Serial.println(http_response.body.substring(0, 240));
+      }
+    }
     return true;
   }
 

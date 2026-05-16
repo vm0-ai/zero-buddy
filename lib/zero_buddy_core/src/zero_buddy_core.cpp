@@ -403,7 +403,7 @@ std::string preprocessAssistantForDisplay(std::string text) {
   replaceAll(out, "\n ", "\n");
   replaceAll(out, " \n", "\n");
   out = trim(out);
-  return out.empty() ? "[empty reply]" : out;
+  return out;
 }
 
 static ZeroMessage parseZeroMessageObject(std::string object) {
@@ -411,6 +411,7 @@ static ZeroMessage parseZeroMessageObject(std::string object) {
   message.id = extractJsonString(object, "id");
   message.role = extractJsonString(object, "role");
   message.content = extractJsonString(object, "content");
+  message.error = extractJsonString(object, "error");
   message.ok = !message.id.empty();
   return message;
 }
@@ -441,8 +442,11 @@ ZeroMessagesResult parseZeroMessagesResponse(std::string body) {
       result.newest_message_id = message.id;
       result.found_any = true;
     }
-    if (message.role == "assistant" && !message.content.empty()) {
-      result.assistant_messages.push_back(preprocessAssistantForDisplay(message.content));
+    if (message.role == "assistant" && message.error.empty() && !message.content.empty()) {
+      const std::string display_message = preprocessAssistantForDisplay(message.content);
+      if (!display_message.empty()) {
+        result.assistant_messages.push_back(display_message);
+      }
     }
     cursor = obj_end + 1;
   }

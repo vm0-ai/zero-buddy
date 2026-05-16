@@ -17,6 +17,7 @@ struct ZeroMessage {
   std::string id;
   std::string role;
   std::string content;
+  std::string error;
 };
 
 struct AssistantQueueManifest {

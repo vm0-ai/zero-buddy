@@ -73,6 +73,26 @@ void test_boot_repair_actions() {
   TEST_ASSERT_TRUE(action.clear_thread_id);
 }
 
+void test_external_power_present_uses_vbus_when_not_charging() {
+  TEST_ASSERT_TRUE(zero_buddy::externalPowerPresent(5000, false));
+}
+
+void test_external_power_present_falls_back_to_charging_when_vbus_unknown() {
+  TEST_ASSERT_TRUE(zero_buddy::externalPowerPresent(-1, true));
+}
+
+void test_external_power_present_rejects_unknown_vbus_when_not_charging() {
+  TEST_ASSERT_FALSE(zero_buddy::externalPowerPresent(-1, false));
+}
+
+void test_external_power_present_rejects_low_vbus_at_default_threshold() {
+  TEST_ASSERT_FALSE(zero_buddy::externalPowerPresent(4200, false));
+}
+
+void test_external_power_present_accepts_custom_lower_threshold() {
+  TEST_ASSERT_TRUE(zero_buddy::externalPowerPresent(4200, false, 4100));
+}
+
 void test_provisioning_service_data_encoding() {
   const auto data = zero_buddy::buildProvisioningServiceData(
       zero_buddy::ProvisioningState::DeviceCodeReady,
@@ -153,6 +173,11 @@ int main() {
   RUN_TEST(test_zero_messages_skip_null_assistant_content);
   RUN_TEST(test_zero_messages_skip_empty_preprocessed_assistant_content);
   RUN_TEST(test_boot_repair_actions);
+  RUN_TEST(test_external_power_present_uses_vbus_when_not_charging);
+  RUN_TEST(test_external_power_present_falls_back_to_charging_when_vbus_unknown);
+  RUN_TEST(test_external_power_present_rejects_unknown_vbus_when_not_charging);
+  RUN_TEST(test_external_power_present_rejects_low_vbus_at_default_threshold);
+  RUN_TEST(test_external_power_present_accepts_custom_lower_threshold);
   RUN_TEST(test_provisioning_service_data_encoding);
   RUN_TEST(test_assistant_queue_manifest_round_trip);
   RUN_TEST(test_persistent_cursor_selects_only_matching_thread);

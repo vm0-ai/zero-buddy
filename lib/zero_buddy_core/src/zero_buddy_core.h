@@ -66,6 +66,9 @@ enum class ProvisioningError : uint8_t {
 std::string trim(std::string value);
 std::string extractJsonString(std::string body, std::string key);
 std::string preprocessAssistantForDisplay(std::string text);
+bool externalPowerPresent(int32_t vbus_mv,
+                          bool battery_charging,
+                          int32_t present_threshold_mv = 4300);
 ZeroMessagesResult parseZeroMessagesResponse(std::string body);
 std::string selectPersistentLastMessageId(std::string current_thread_id,
                                           std::string stored_thread_id,

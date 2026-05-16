@@ -14,12 +14,14 @@ enum class ChargeState : uint8_t {
 struct PowerSnapshot {
   int16_t battery_percent = -1;
   ChargeState charge_state = ChargeState::Unknown;
+  int32_t vbus_mv = -1;
 };
 
 struct PowerEvents {
   bool initialized = false;
   bool charge_state_changed = false;
   bool battery_percent_changed = false;
+  bool vbus_changed = false;
 };
 
 uint8_t batteryBarsForPercent(int32_t percent);

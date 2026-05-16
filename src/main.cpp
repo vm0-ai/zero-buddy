@@ -307,6 +307,7 @@ zero_buddy::power::PowerSnapshot readM5UnifiedPowerSnapshot() {
   snapshot.battery_percent =
       level < 0 ? static_cast<int16_t>(-1) : static_cast<int16_t>(level);
   snapshot.charge_state = toPowerChargeState(M5.Power.isCharging());
+  snapshot.vbus_mv = M5.Power.getVBUSVoltage();
   return snapshot;
 }
 
@@ -323,7 +324,9 @@ void logPowerSnapshot(const char* prefix,
   Serial.print(chargeStateName(snapshot.charge_state));
   Serial.print(" batt=");
   Serial.print(static_cast<int>(snapshot.battery_percent));
-  Serial.println("%");
+  Serial.print("% vbus=");
+  Serial.print(static_cast<int>(snapshot.vbus_mv));
+  Serial.println("mV");
 }
 
 bool refreshPowerSnapshot(bool force) {
@@ -340,7 +343,8 @@ bool refreshPowerSnapshot(bool force) {
   const bool should_log =
       !g_power_snapshot_valid ||
       events.charge_state_changed ||
-      events.battery_percent_changed;
+      events.battery_percent_changed ||
+      events.vbus_changed;
   applyPowerSnapshot(next);
   g_last_power_poll_ms = now;
 
@@ -402,7 +406,9 @@ bool waitForBtnALongPress(uint32_t hold_ms) {
 
 bool externalPowerConnected() {
   refreshPowerSnapshot(true);
-  return g_power_snapshot.charge_state == zero_buddy::power::ChargeState::Charging;
+  return zero_buddy::externalPowerPresent(
+      g_power_snapshot.vbus_mv,
+      g_power_snapshot.charge_state == zero_buddy::power::ChargeState::Charging);
 }
 
 const char* modeRunErrorName(ModeRunError error) {

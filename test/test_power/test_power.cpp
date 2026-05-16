@@ -36,6 +36,25 @@ void test_power_events_compare_snapshots() {
   TEST_ASSERT_TRUE(changed.battery_percent_changed);
 }
 
+void test_power_events_report_meaningful_vbus_changes() {
+  PowerSnapshot previous;
+  previous.vbus_mv = -1;
+
+  PowerSnapshot current = previous;
+  current.vbus_mv = 0;
+  TEST_ASSERT_TRUE(
+      zero_buddy::power::detectPowerEvents(&previous, current).vbus_changed);
+
+  previous.vbus_mv = 5000;
+  current.vbus_mv = 5060;
+  TEST_ASSERT_FALSE(
+      zero_buddy::power::detectPowerEvents(&previous, current).vbus_changed);
+
+  current.vbus_mv = 5120;
+  TEST_ASSERT_TRUE(
+      zero_buddy::power::detectPowerEvents(&previous, current).vbus_changed);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -45,5 +64,6 @@ int main(int argc, char** argv) {
   UNITY_BEGIN();
   RUN_TEST(test_battery_bars_are_three_step_display);
   RUN_TEST(test_power_events_compare_snapshots);
+  RUN_TEST(test_power_events_report_meaningful_vbus_changes);
   return UNITY_END();
 }

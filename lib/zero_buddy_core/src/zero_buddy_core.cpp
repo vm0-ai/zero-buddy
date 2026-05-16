@@ -213,6 +213,12 @@ bool extractJsonBool(std::string body, std::string key, bool* value_out) {
 
 }  // namespace
 
+bool externalPowerPresent(int32_t vbus_mv,
+                          bool battery_charging,
+                          int32_t present_threshold_mv) {
+  return battery_charging || (vbus_mv >= 0 && vbus_mv >= present_threshold_mv);
+}
+
 BootRepairAction repairActionForBootFailure(BootRepairEvent event) {
   BootRepairAction action;
   switch (event) {

@@ -110,8 +110,8 @@ constexpr size_t kMaxThreadIdChars = 96;
 constexpr size_t kMaxLastMessageIdChars = zero_buddy::state::kLastMessageIdBytes - 1;
 constexpr size_t kMaxPollTokenChars = 512;
 constexpr uint32_t kProvisioningConnectAttemptMs = 20000;
-constexpr uint32_t kSetupWifiIdleShutdownMs = 60UL * 1000UL;
-constexpr int16_t kSetupLowBatteryPercent = 10;
+constexpr uint32_t kSetupWifiIdleDeepSleepMs = 60UL * 1000UL;
+constexpr uint32_t kSetupBleStatusLogMs = 5UL * 1000UL;
 constexpr uint32_t kPowerEventPollMs = 1000;
 constexpr char kBb0BleServiceUuid[] = "bb000001-8f16-4b2a-9bb0-000000000001";
 constexpr char kBb0BleInfoUuid[] = "bb000002-8f16-4b2a-9bb0-000000000001";
@@ -125,6 +125,7 @@ constexpr uint32_t kM5Pm1I2cFreq = M5PM1_I2C_FREQ_100K;
 
 RTC_DATA_ATTR uint32_t g_rtc_magic = 0;
 RTC_DATA_ATTR GlobalState g_state;
+RTC_DATA_ATTR uint8_t g_setup_deep_sleep_pending = 0;
 
 ScreenRenderer g_screen(&g_state);
 uint8_t g_pcm_buffer[kPcmBufferBytes] = {0};
@@ -380,6 +381,39 @@ void cancelCheckTimers() {
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
 }
 
+void configureBtnADeepSleepWake() {
+  esp_sleep_enable_ext1_wakeup(gpioWakeMask(kBtnAWakePin),
+                               ESP_EXT1_WAKEUP_ANY_LOW);
+}
+
+const char* resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON:
+      return "poweron";
+    case ESP_RST_EXT:
+      return "external";
+    case ESP_RST_SW:
+      return "software";
+    case ESP_RST_PANIC:
+      return "panic";
+    case ESP_RST_INT_WDT:
+      return "interrupt-watchdog";
+    case ESP_RST_TASK_WDT:
+      return "task-watchdog";
+    case ESP_RST_WDT:
+      return "watchdog";
+    case ESP_RST_DEEPSLEEP:
+      return "deep-sleep";
+    case ESP_RST_BROWNOUT:
+      return "brownout";
+    case ESP_RST_SDIO:
+      return "sdio";
+    case ESP_RST_UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
 void restartAwareDelay(uint32_t duration_ms) {
   const uint32_t start = millis();
   while (millis() - start < duration_ms) {
@@ -413,16 +447,6 @@ bool externalPowerConnected() {
   return zero_buddy::externalPowerPresent(
       g_power_snapshot.vbus_mv,
       g_power_snapshot.charge_state == zero_buddy::power::ChargeState::Charging);
-}
-
-bool setupBatteryTooLowWithoutExternalPower() {
-  refreshPowerSnapshot(true);
-  const bool external_power = zero_buddy::externalPowerPresent(
-      g_power_snapshot.vbus_mv,
-      g_power_snapshot.charge_state == zero_buddy::power::ChargeState::Charging);
-  return !external_power &&
-         g_power_snapshot.battery_percent >= 0 &&
-         g_power_snapshot.battery_percent < kSetupLowBatteryPercent;
 }
 
 const char* modeRunErrorName(ModeRunError error) {
@@ -1460,6 +1484,9 @@ bool ensureBleProvisioningStarted() {
   if (g_ble_started) {
     return true;
   }
+  refreshPowerSnapshot(true);
+  Serial.printf("BLE setup start device=%s\n", bleDeviceName().c_str());
+  logPowerSnapshot("BLE setup start power", g_power_snapshot);
   g_ble_wifi_received = false;
   g_ble_client_connected = false;
   g_ble_client_has_connected = false;
@@ -1493,17 +1520,18 @@ bool ensureBleProvisioningStarted() {
   publishBleProvisioningState(zero_buddy::ProvisioningState::Setup);
   g_ble_advertising->start();
   g_ble_started = true;
+  Serial.println("BLE setup advertising started");
   return true;
 }
 
-void stopBleProvisioning() {
+void stopBleProvisioning(bool clear_all = true) {
   if (!g_ble_started) {
     return;
   }
   if (g_ble_advertising != nullptr) {
     g_ble_advertising->stop();
   }
-  NimBLEDevice::deinit(true);
+  NimBLEDevice::deinit(clear_all);
   g_ble_info_characteristic = nullptr;
   g_ble_advertising = nullptr;
   g_ble_started = false;
@@ -1512,66 +1540,29 @@ void stopBleProvisioning() {
   g_ble_client_has_connected = false;
 }
 
-void shutdownFromSetupWifiIdle() {
-  Serial.println("Setup WiFi idle timeout; shutting down");
-  refreshPowerSnapshot(true);
-  const bool external_power = zero_buddy::externalPowerPresent(
-      g_power_snapshot.vbus_mv,
-      g_power_snapshot.charge_state == zero_buddy::power::ChargeState::Charging);
-  const bool low_battery =
-      g_power_snapshot.battery_percent >= 0 &&
-      g_power_snapshot.battery_percent < kSetupLowBatteryPercent;
-
-  stopBleProvisioning();
-  cancelCheckTimers();
-  setAssistantLedOff();
-  if (low_battery) {
-    g_screen.render_screen_setup_status("low battery", "charge");
-    restartAwareDelay(1500);
+void stopBleAdvertisingForSetupSleep() {
+  if (g_ble_advertising != nullptr) {
+    g_ble_advertising->stop();
   }
-  g_screen.screenOff();
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  Serial.flush();
-
-  if (external_power) {
-    Serial.println("Setup idle timeout on external power; PMIC shutdown skipped");
-    while (true) {
-      pollControls();
-      delay(1000);
-    }
-  }
-
-  delay(100);
-  if (g_pm1_ready && g_pm1.shutdown() == M5PM1_OK) {
-    while (true) {
-      delay(1000);
-    }
-  }
-  M5.Power.powerOff();
-  while (true) {
-    delay(1000);
-  }
+  g_ble_started = false;
+  g_ble_client_connected = false;
 }
 
-void shutdownFromSetupLowBattery() {
-  Serial.println("Setup blocked by low battery; shutting down");
-  stopBleProvisioning();
-  cancelCheckTimers();
+void enterSetupDeepSleepUntilBtnA() {
+  Serial.println("BLE setup idle timeout; entering deep sleep until BtnA");
+  refreshPowerSnapshot(true);
+  logPowerSnapshot("BLE setup sleep power", g_power_snapshot);
+  stopBleAdvertisingForSetupSleep();
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  configureBtnADeepSleepWake();
+  g_setup_deep_sleep_pending = 1;
   setAssistantLedOff();
-  g_screen.render_screen_setup_status("low battery", "charge");
-  restartAwareDelay(1500);
   g_screen.screenOff();
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   Serial.flush();
-  delay(100);
-  if (g_pm1_ready && g_pm1.shutdown() == M5PM1_OK) {
-    while (true) {
-      delay(1000);
-    }
-  }
-  M5.Power.powerOff();
+  delay(20);
+  esp_deep_sleep_start();
   while (true) {
     delay(1000);
   }
@@ -1584,15 +1575,30 @@ bool waitForBleWifiCredentials() {
   g_ble_wifi_received = false;
   publishBleProvisioningState(zero_buddy::ProvisioningState::Setup);
   g_screen.render_screen_setup_wifi();
-  const uint32_t start = millis();
+  Serial.println("BLE setup waiting for WiFi credentials");
+  const uint32_t start_ms = millis();
+  uint32_t last_status_log_ms = 0;
   while (!g_ble_wifi_received) {
     pollControls();
-    if (!g_ble_client_has_connected && millis() - start >= kSetupWifiIdleShutdownMs) {
-      shutdownFromSetupWifiIdle();
+    const uint32_t now = millis();
+    if (!g_ble_client_has_connected &&
+        now - start_ms >= kSetupWifiIdleDeepSleepMs) {
+      enterSetupDeepSleepUntilBtnA();
       return false;
+    }
+    if (last_status_log_ms == 0 ||
+        now - last_status_log_ms >= kSetupBleStatusLogMs) {
+      last_status_log_ms = now;
+      refreshPowerSnapshot(true);
+      Serial.printf("BLE setup status connected=%d ever_connected=%d wifi_received=%d\n",
+                    g_ble_client_connected ? 1 : 0,
+                    g_ble_client_has_connected ? 1 : 0,
+                    g_ble_wifi_received ? 1 : 0);
+      logPowerSnapshot("BLE setup power", g_power_snapshot);
     }
     delay(20);
   }
+  Serial.println("BLE setup received WiFi credentials");
   publishBleProvisioningState(zero_buddy::ProvisioningState::WifiReceived);
   return saveRuntimeWifiConfig(g_ble_wifi_ssid, g_ble_wifi_password);
 }
@@ -1627,15 +1633,14 @@ bool provisionWifiOverBle() {
 }
 
 bool ensureWifiReady() {
+  Serial.println("Boot preflight: ensure WiFi ready");
   RuntimeConfig config = loadRuntimeConfig();
   if (config.hasWifi() &&
       connectWifiCredentials(config.wifi_ssid, config.wifi_password, kWifiConnectAttemptMs, nullptr)) {
+    Serial.println("Boot preflight: stored WiFi connected");
     return true;
   }
-  if (setupBatteryTooLowWithoutExternalPower()) {
-    shutdownFromSetupLowBattery();
-    return false;
-  }
+  Serial.println("Boot preflight: entering BLE WiFi provisioning");
   return provisionWifiOverBle();
 }
 
@@ -1991,8 +1996,7 @@ class HardwareDeepSleepOps : public DeepSleepOps {
   }
 
   void configureBtnAWake() override {
-    esp_sleep_enable_ext1_wakeup(gpioWakeMask(kBtnAWakePin),
-                                 ESP_EXT1_WAKEUP_ANY_LOW);
+    configureBtnADeepSleepWake();
   }
 
   void screenOff() override {
@@ -2560,6 +2564,10 @@ void runRecordingThenIdle() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.printf("Boot reset_reason=%s(%d) wake_cause=%d\n",
+                resetReasonName(esp_reset_reason()),
+                static_cast<int>(esp_reset_reason()),
+                static_cast<int>(esp_sleep_get_wakeup_cause()));
   auto cfg = M5.config();
   cfg.clear_display = false;
   cfg.internal_spk = true;
@@ -2586,14 +2594,35 @@ void setup() {
 
   const uint64_t ext1_wake_mask =
       wake_cause == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;
-  const bool btn_a_wake =
+  const bool btn_a_ext1_wake =
       (wake_cause == ESP_SLEEP_WAKEUP_EXT1 &&
-       (ext1_wake_mask & gpioWakeMask(kBtnAWakePin)) != 0) ||
-      buttonADown();
+       (ext1_wake_mask & gpioWakeMask(kBtnAWakePin)) != 0);
+  const bool btn_a_boot_press = buttonADown();
+  const bool setup_deep_sleep_wake =
+      btn_a_ext1_wake && g_setup_deep_sleep_pending != 0;
+  if (setup_deep_sleep_wake) {
+    g_setup_deep_sleep_pending = 0;
+  } else if (wake_cause != ESP_SLEEP_WAKEUP_EXT1) {
+    g_setup_deep_sleep_pending = 0;
+  }
+  const bool normal_deep_sleep_btn_wake =
+      btn_a_ext1_wake &&
+      !setup_deep_sleep_wake &&
+      had_rtc_state &&
+      previous_mode == zero_buddy::state::Mode::DeepSleep;
+  const bool btn_a_wake =
+      normal_deep_sleep_btn_wake ||
+      (wake_cause != ESP_SLEEP_WAKEUP_EXT1 && btn_a_boot_press);
   const bool external_power_wake =
       (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED && had_rtc_state &&
        previous_mode == zero_buddy::state::Mode::DeepSleep &&
        externalPowerConnected());
+
+  if (setup_deep_sleep_wake) {
+    Serial.println("BtnA wake from setup deep sleep; continuing boot preflight");
+  } else if (btn_a_ext1_wake && !normal_deep_sleep_btn_wake) {
+    Serial.println("BtnA wake before normal deep sleep state; continuing boot preflight");
+  }
 
   if (wake_cause == ESP_SLEEP_WAKEUP_UNDEFINED && !external_power_wake) {
     g_screen.render_screen_boot();

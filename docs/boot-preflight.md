@@ -62,15 +62,12 @@ Goal: obtain usable Wi-Fi.
    `bb000001-8f16-4b2a-9bb0-000000000001`.
 4. The user opens `https://bb0.ai` in Chrome and uses Web Bluetooth to connect
    to the device.
-   If the device remains on this setup prompt for 60 seconds without any BLE
-   client connecting, it stops BLE provisioning and shuts down through the
-   M5PM1 PMIC. Pressing the side RST/PWR button starts it again. Once a BLE
-   client has connected in the current setup session, this automatic shutdown is
-   canceled while the device waits for Wi-Fi credentials.
-   If the battery is below 10% and no external power is present, the device
-   shows `low battery / charge` and shuts down before starting BLE setup. If
-   USB or other external power is present, the firmware skips PMIC shutdown to
-   avoid an immediate wake/restart loop.
+   If no BLE client connects for 60 seconds, the firmware stops BLE, turns the
+   screen off, and enters ESP deep sleep with BtnA configured as the wake
+   source. Pressing BtnA wakes the device back into boot preflight. Once a BLE
+   client has connected in the current setup session, this setup sleep is
+   canceled while the device waits for Wi-Fi credentials. While waiting, it logs
+   BLE connection state and power snapshots over serial for debugging.
 5. The web page writes Wi-Fi credentials to BLE config characteristic
    `bb000003-8f16-4b2a-9bb0-000000000001`:
    - `{"wifi_ssid":"...","wifi_password":"..."}`

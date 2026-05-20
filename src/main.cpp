@@ -111,6 +111,7 @@ constexpr size_t kMaxLastMessageIdChars = zero_buddy::state::kLastMessageIdBytes
 constexpr size_t kMaxPollTokenChars = 512;
 constexpr uint32_t kProvisioningConnectAttemptMs = 20000;
 constexpr uint32_t kSetupWifiIdleShutdownMs = 60UL * 1000UL;
+constexpr int16_t kSetupLowBatteryPercent = 10;
 constexpr uint32_t kPowerEventPollMs = 1000;
 constexpr char kBb0BleServiceUuid[] = "bb000001-8f16-4b2a-9bb0-000000000001";
 constexpr char kBb0BleInfoUuid[] = "bb000002-8f16-4b2a-9bb0-000000000001";
@@ -1503,13 +1504,34 @@ void stopBleProvisioning() {
 
 void shutdownFromSetupWifiIdle() {
   Serial.println("Setup WiFi idle timeout; shutting down");
+  refreshPowerSnapshot(true);
+  const bool external_power = zero_buddy::externalPowerPresent(
+      g_power_snapshot.vbus_mv,
+      g_power_snapshot.charge_state == zero_buddy::power::ChargeState::Charging);
+  const bool low_battery =
+      g_power_snapshot.battery_percent >= 0 &&
+      g_power_snapshot.battery_percent < kSetupLowBatteryPercent;
+
   stopBleProvisioning();
   cancelCheckTimers();
   setAssistantLedOff();
+  if (low_battery) {
+    g_screen.render_screen_setup_status("low battery", "charge");
+    restartAwareDelay(1500);
+  }
   g_screen.screenOff();
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   Serial.flush();
+
+  if (external_power) {
+    Serial.println("Setup idle timeout on external power; PMIC shutdown skipped");
+    while (true) {
+      pollControls();
+      delay(1000);
+    }
+  }
+
   delay(100);
   if (g_pm1_ready && g_pm1.shutdown() == M5PM1_OK) {
     while (true) {

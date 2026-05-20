@@ -62,6 +62,11 @@ Goal: obtain usable Wi-Fi.
    `bb000001-8f16-4b2a-9bb0-000000000001`.
 4. The user opens `https://bb0.ai` in Chrome and uses Web Bluetooth to connect
    to the device.
+   If the device remains on this setup prompt for 60 seconds without any BLE
+   client connecting, it stops BLE provisioning and shuts down through the
+   M5PM1 PMIC. Pressing the side RST/PWR button starts it again. Once a BLE
+   client has connected in the current setup session, this automatic shutdown is
+   canceled while the device waits for Wi-Fi credentials.
 5. The web page writes Wi-Fi credentials to BLE config characteristic
    `bb000003-8f16-4b2a-9bb0-000000000001`:
    - `{"wifi_ssid":"...","wifi_password":"..."}`

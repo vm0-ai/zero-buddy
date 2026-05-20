@@ -110,6 +110,7 @@ constexpr size_t kMaxThreadIdChars = 96;
 constexpr size_t kMaxLastMessageIdChars = zero_buddy::state::kLastMessageIdBytes - 1;
 constexpr size_t kMaxPollTokenChars = 512;
 constexpr uint32_t kProvisioningConnectAttemptMs = 20000;
+constexpr uint32_t kSetupWifiIdleShutdownMs = 60UL * 1000UL;
 constexpr uint32_t kPowerEventPollMs = 1000;
 constexpr char kBb0BleServiceUuid[] = "bb000001-8f16-4b2a-9bb0-000000000001";
 constexpr char kBb0BleInfoUuid[] = "bb000002-8f16-4b2a-9bb0-000000000001";
@@ -140,6 +141,8 @@ String g_ble_wifi_password;
 NimBLECharacteristic* g_ble_info_characteristic = nullptr;
 NimBLEAdvertising* g_ble_advertising = nullptr;
 bool g_ble_started = false;
+bool g_ble_client_connected = false;
+bool g_ble_client_has_connected = false;
 
 void beepAssistantLedOn();
 bool assistant_message_exists();
@@ -1328,6 +1331,20 @@ class Bb0ConfigWriteCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
+class Bb0ServerCallbacks : public NimBLEServerCallbacks {
+ public:
+  void onConnect(NimBLEServer*, NimBLEConnInfo&) override {
+    g_ble_client_connected = true;
+    g_ble_client_has_connected = true;
+    Serial.println("BLE provisioning client connected");
+  }
+
+  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
+    g_ble_client_connected = false;
+    Serial.println("BLE provisioning client disconnected");
+  }
+};
+
 String bleDeviceName() {
   return String("Zero-Buddy-") + chipSuffix();
 }
@@ -1433,6 +1450,8 @@ bool ensureBleProvisioningStarted() {
     return true;
   }
   g_ble_wifi_received = false;
+  g_ble_client_connected = false;
+  g_ble_client_has_connected = false;
   g_ble_wifi_ssid = "";
   g_ble_wifi_password = "";
 
@@ -1445,6 +1464,8 @@ bool ensureBleProvisioningStarted() {
   }
   NimBLEDevice::init(device_name.c_str());
   NimBLEServer* server = NimBLEDevice::createServer();
+  static Bb0ServerCallbacks server_callbacks;
+  server->setCallbacks(&server_callbacks, false);
   NimBLEService* service = server->createService(kBb0BleServiceUuid);
   NimBLECharacteristic* info = service->createCharacteristic(
       kBb0BleInfoUuid,
@@ -1476,6 +1497,29 @@ void stopBleProvisioning() {
   g_ble_advertising = nullptr;
   g_ble_started = false;
   g_ble_wifi_received = false;
+  g_ble_client_connected = false;
+  g_ble_client_has_connected = false;
+}
+
+void shutdownFromSetupWifiIdle() {
+  Serial.println("Setup WiFi idle timeout; shutting down");
+  stopBleProvisioning();
+  cancelCheckTimers();
+  setAssistantLedOff();
+  g_screen.screenOff();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  Serial.flush();
+  delay(100);
+  if (g_pm1_ready && g_pm1.shutdown() == M5PM1_OK) {
+    while (true) {
+      delay(1000);
+    }
+  }
+  M5.Power.powerOff();
+  while (true) {
+    delay(1000);
+  }
 }
 
 bool waitForBleWifiCredentials() {
@@ -1485,8 +1529,13 @@ bool waitForBleWifiCredentials() {
   g_ble_wifi_received = false;
   publishBleProvisioningState(zero_buddy::ProvisioningState::Setup);
   g_screen.render_screen_setup_wifi();
+  const uint32_t start = millis();
   while (!g_ble_wifi_received) {
     pollControls();
+    if (!g_ble_client_has_connected && millis() - start >= kSetupWifiIdleShutdownMs) {
+      shutdownFromSetupWifiIdle();
+      return false;
+    }
     delay(20);
   }
   publishBleProvisioningState(zero_buddy::ProvisioningState::WifiReceived);

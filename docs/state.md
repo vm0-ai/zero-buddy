@@ -65,6 +65,11 @@ All transitions are driven by the state machine. A mode must not directly mutate
   - Firmware uses the official `M5PM1` driver for PMIC button state and
     long-press threshold configuration.
 - Runtime loops that wait on user input, Wi-Fi, transcription, status/result display, or the boot splash should poll global controls.
+- The BLE setup prompt (`visit BB0.AI in Chrome`) is intentionally short-lived:
+  after 60 seconds without any BLE client connection, firmware stops BLE and
+  requests PMIC shutdown. The side RST/PWR button is then used to start setup
+  again. A BLE client connection cancels this setup-session auto-shutdown while
+  firmware waits for Wi-Fi credentials.
 - Deep sleep wake remains owned by the configured RTC timer and BtnA wake source.
 
 ## Power Management

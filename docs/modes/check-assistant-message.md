@@ -41,6 +41,9 @@ It does not own:
 3. Query latest assistant messages.
    - If `GlobalState.lastMessageId` is empty, skip polling entirely.
    - Otherwise use `GlobalState.lastMessageId` as `sinceId`.
+   - If the service reports that the stored thread no longer exists, clear the
+     stored thread id, cursor, and assistant messages, create a replacement
+     thread with the init message, and commit that new message id as the cursor.
    - The query result should identify:
      - the newest message id observed,
      - the assistant messages that should be stored,

@@ -19,28 +19,6 @@
 #include <string>
 #include <vector>
 
-#if __has_include("secrets.h")
-#include "secrets.h"
-#else
-#include "secrets.example.h"
-#endif
-
-#ifndef ZERO_BUDDY_WIFI_SSID
-#define ZERO_BUDDY_WIFI_SSID ""
-#endif
-
-#ifndef ZERO_BUDDY_WIFI_PASSWORD
-#define ZERO_BUDDY_WIFI_PASSWORD ""
-#endif
-
-#ifndef ZERO_BUDDY_PAT
-#define ZERO_BUDDY_PAT ""
-#endif
-
-#ifndef ZERO_BUDDY_THREAD_ID
-#define ZERO_BUDDY_THREAD_ID ""
-#endif
-
 #include "screen_renderer.h"
 #include "zero_buddy_controls.h"
 #include "zero_buddy_core.h"
@@ -672,8 +650,6 @@ struct RuntimeConfig {
   bool wifi_from_nvs = false;
   bool auth_token_from_nvs = false;
   bool thread_id_from_nvs = false;
-  bool auth_token_from_compile = false;
-  bool thread_id_from_compile = false;
 
   bool hasWifi() const {
     return wifi_ssid.length() > 0;
@@ -699,17 +675,6 @@ String readRuntimeConfigString(const char* key, size_t max_chars) {
     return "";
   }
   return value;
-}
-
-String compileTimeConfigString(const char* value, size_t max_chars) {
-  if (value == nullptr || value[0] == '\0') {
-    return "";
-  }
-  String compiled(value);
-  if (compiled.length() > max_chars) {
-    return "";
-  }
-  return compiled;
 }
 
 bool writeRuntimeConfigString(const char* key, const String& value, size_t max_chars) {
@@ -763,28 +728,13 @@ RuntimeConfig loadRuntimeConfig() {
     config.wifi_from_nvs = true;
     config.wifi_password =
         readRuntimeConfigString(kRuntimeWifiPasswordKey, kMaxWifiPasswordChars);
-  } else {
-    config.wifi_ssid =
-        compileTimeConfigString(ZERO_BUDDY_WIFI_SSID, kMaxWifiSsidChars);
-    if (config.wifi_ssid.length() > 0) {
-      config.wifi_password =
-          compileTimeConfigString(ZERO_BUDDY_WIFI_PASSWORD, kMaxWifiPasswordChars);
-    }
   }
 
-  config.auth_token = compileTimeConfigString(ZERO_BUDDY_PAT, kMaxAuthTokenChars);
-  config.auth_token_from_compile = config.auth_token.length() > 0;
-  if (config.auth_token.length() == 0) {
-    config.auth_token = readRuntimeConfigString(kRuntimeAuthTokenKey, kMaxAuthTokenChars);
-    config.auth_token_from_nvs = config.auth_token.length() > 0;
-  }
+  config.auth_token = readRuntimeConfigString(kRuntimeAuthTokenKey, kMaxAuthTokenChars);
+  config.auth_token_from_nvs = config.auth_token.length() > 0;
 
-  config.thread_id = compileTimeConfigString(ZERO_BUDDY_THREAD_ID, kMaxThreadIdChars);
-  config.thread_id_from_compile = config.thread_id.length() > 0;
-  if (config.thread_id.length() == 0) {
-    config.thread_id = readRuntimeConfigString(kRuntimeThreadIdKey, kMaxThreadIdChars);
-    config.thread_id_from_nvs = config.thread_id.length() > 0;
-  }
+  config.thread_id = readRuntimeConfigString(kRuntimeThreadIdKey, kMaxThreadIdChars);
+  config.thread_id_from_nvs = config.thread_id.length() > 0;
   return config;
 }
 
@@ -1254,6 +1204,7 @@ bool transcribePcmFile(const char* path, std::string* text_out) {
 enum class BootHttpOutcome {
   Ok,
   NetworkFailed,
+  ThreadMissing,
   Rejected,
 };
 
@@ -1304,6 +1255,10 @@ bool extractJsonUnsigned(const String& body, const char* key, uint32_t* value_ou
   }
   *value_out = value;
   return true;
+}
+
+bool isThreadMissingStatus(int status_code) {
+  return status_code == 400 || status_code == 404 || status_code == 410;
 }
 
 BootHttpOutcome requestDeviceCode(DeviceCodeSession* session_out) {
@@ -1788,8 +1743,11 @@ BootHttpOutcome validateRuntimeThread(const RuntimeConfig& config) {
                      config.thread_id + "/messages?limit=1";
   HttpResponse response;
   if (!httpGetWithToken(url, config.auth_token, &response, nullptr)) {
-    return response.status_code < 0 ? BootHttpOutcome::NetworkFailed
-                                    : BootHttpOutcome::Rejected;
+    if (response.status_code < 0) {
+      return BootHttpOutcome::NetworkFailed;
+    }
+    return isThreadMissingStatus(response.status_code) ? BootHttpOutcome::ThreadMissing
+                                                       : BootHttpOutcome::Rejected;
   }
   return BootHttpOutcome::Ok;
 }
@@ -1824,6 +1782,22 @@ BootHttpOutcome createRuntimeThreadFromInitMessage(const RuntimeConfig& config) 
   return BootHttpOutcome::Ok;
 }
 
+BootHttpOutcome recreateRuntimeThreadAfterMissingThread(const RuntimeConfig& config,
+                                                        const char* context) {
+  if (!config.hasAuthToken()) {
+    return BootHttpOutcome::Rejected;
+  }
+  Serial.printf("%s: thread missing, clearing local thread state\n",
+                context == nullptr ? "thread repair" : context);
+  clearRuntimeThreadId();
+  RuntimeConfig repair_config = loadRuntimeConfig();
+  if (!repair_config.hasAuthToken()) {
+    repair_config.auth_token = config.auth_token;
+    repair_config.auth_token_from_nvs = config.auth_token_from_nvs;
+  }
+  return createRuntimeThreadFromInitMessage(repair_config);
+}
+
 void haltBootPreflight(const char* line1, const char* line2) {
   g_screen.render_screen_setup_status(line1, line2);
   while (true) {
@@ -1852,9 +1826,6 @@ bool ensureIdentityReady() {
           zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::ThreadCreateFailed);
       if (action.clear_auth_token) {
         clearRuntimeAuthAndThread();
-        if (config.auth_token_from_compile) {
-          haltBootPreflight("token rejected", "check firmware");
-        }
         if (!config.auth_token_from_nvs) {
           runDeviceCodeProvisioning();
         }
@@ -1870,12 +1841,21 @@ bool ensureIdentityReady() {
       ensureWifiReady();
       continue;
     }
+    if (validated == BootHttpOutcome::ThreadMissing) {
+      const BootHttpOutcome repaired =
+          recreateRuntimeThreadAfterMissingThread(config, "boot thread validate");
+      if (repaired == BootHttpOutcome::Ok) {
+        continue;
+      }
+      if (repaired == BootHttpOutcome::NetworkFailed) {
+        ensureWifiReady();
+        continue;
+      }
+      continue;
+    }
     const auto action =
         zero_buddy::repairActionForBootFailure(zero_buddy::BootRepairEvent::MessageReadFailed);
     if (action.clear_thread_id) {
-      if (config.thread_id_from_compile) {
-        haltBootPreflight("thread rejected", "check firmware");
-      }
       clearRuntimeThreadId();
     }
   }
@@ -1914,9 +1894,22 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
     if (!since_id.empty()) {
       url += "&sinceId=" + String(since_id.c_str());
     }
-    String body;
-    if (!httpGet(url, &body, &abort_detector_)) {
+    HttpResponse response;
+    if (!httpGetWithToken(url, config.auth_token, &response, &abort_detector_)) {
       abortForButtonIntent();
+      if (!isAborted() && isThreadMissingStatus(response.status_code)) {
+        const BootHttpOutcome repaired =
+            recreateRuntimeThreadAfterMissingThread(config, "assistant poll");
+        if (repaired == BootHttpOutcome::Ok) {
+          result_out->newestMessageId = zero_buddy::state::copyLastMessageId(g_state);
+          result_out->assistantMessages.clear();
+          result_out->hasNewAssistantMessages = false;
+          return true;
+        }
+        if (repaired == BootHttpOutcome::NetworkFailed) {
+          ensureWifiReady();
+        }
+      }
       return false;
     }
     abortForButtonIntent();
@@ -1924,7 +1917,7 @@ class HardwareCheckOps : public CheckAssistantMessageOps {
       return false;
     }
 
-    const auto parsed = zero_buddy::parseZeroMessagesResponse(body.c_str());
+    const auto parsed = zero_buddy::parseZeroMessagesResponse(response.body.c_str());
     if (parsed.newest_message_id.size() >= zero_buddy::state::kLastMessageIdBytes) {
       return false;
     }
@@ -2300,14 +2293,10 @@ class HardwareRecordingOps : public RecordingOps {
                   static_cast<unsigned>(prompt_text.size()));
     Serial.printf("message send auth chars=%u source=%s\n",
                   static_cast<unsigned>(config.auth_token.length()),
-                  config.auth_token_from_compile
-                      ? "compiled"
-                      : (config.auth_token_from_nvs ? "nvs" : "none"));
+                  config.auth_token_from_nvs ? "nvs" : "none");
     Serial.printf("message send thread chars=%u source=%s\n",
                   static_cast<unsigned>(config.thread_id.length()),
-                  config.thread_id_from_compile
-                      ? "compiled"
-                      : (config.thread_id_from_nvs ? "nvs" : "none"));
+                  config.thread_id_from_nvs ? "nvs" : "none");
     const bool sent_ok = httpPostJsonRequest(kZeroPostUrl,
                                              body,
                                              config.auth_token,
@@ -2323,8 +2312,10 @@ class HardwareRecordingOps : public RecordingOps {
       }
     }
     if (!sent_ok) {
-      if (http_response.status_code == 400 || http_response.status_code == 404) {
-        Serial.println("message send thread invalid, retrying without threadId");
+      if (sent_thread_id && isThreadMissingStatus(http_response.status_code)) {
+        Serial.println("message send thread missing, clearing local thread state");
+        clearRuntimeThreadId();
+        Serial.println("message send retrying without threadId");
         const String repair_body =
             String("{\"prompt\":\"") + jsonEscape(String(prompt_text.c_str())) + "\"}";
         HttpResponse repair_response;
@@ -2352,9 +2343,6 @@ class HardwareRecordingOps : public RecordingOps {
           if (!repair_message_id.empty() && repair_thread_id.length() > 0 &&
               repair_thread_id.length() <= kMaxThreadIdChars &&
               saveRuntimeThreadId(repair_thread_id)) {
-            if (http_response.status_code == 400) {
-              clearPersistentLastMessageCursor();
-            }
             *user_message_id_out = repair_message_id;
             return true;
           }

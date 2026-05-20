@@ -76,6 +76,9 @@ It does not own:
 
 8. Send the text message.
    - Send the recognized text as a user message.
+   - If the stored thread no longer exists, clear the old thread-scoped local
+     state and retry the same user message without `threadId`, letting the
+     service create a replacement thread.
    - The response must include the latest user `messageId`.
    - Do not update `lastMessageId` until the send is accepted.
 

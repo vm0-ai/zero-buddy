@@ -16,20 +16,8 @@ Runtime configuration is stored in NVS namespace `zero_runtime`.
 
 Wi-Fi, Zero auth, Zero thread, and transcription auth are not compile-time
 values. Speech transcription uses the runtime `auth_token` as a PAT.
-
-The firmware may also be built with optional compile-time defaults:
-
-- `ZERO_BUDDY_WIFI_SSID`
-- `ZERO_BUDDY_WIFI_PASSWORD`
-- `ZERO_BUDDY_PAT`
-- `ZERO_BUDDY_THREAD_ID`
-
-The effective Wi-Fi config is derived as `NVS value ?? compile-time default`.
-For auth, a compile-time `ZERO_BUDDY_PAT` or `ZERO_BUDDY_THREAD_ID` takes
-precedence over NVS so older runtime auth cannot override a pre-provisioned
-firmware build. If Wi-Fi, PAT, and thread id are provided at compile time and
-still validate at boot, preflight can complete without provisioning and enter
-normal `Read` mode directly.
+The firmware does not support compile-time Wi-Fi, auth token, or thread
+defaults; a blank device must obtain them through runtime provisioning.
 
 ## Reset
 
@@ -155,7 +143,8 @@ The info characteristic returns JSON and notifies during Wi-Fi provisioning:
 Goal: obtain a usable `thread_id`.
 
 1. If `thread_id` exists, validate it by reading messages from that thread.
-2. If message read is rejected by the service, clear only `thread_id`.
+2. If the service reports that the thread no longer exists, clear `thread_id`,
+   the persisted message cursor, and stored assistant messages.
 3. If `auth_token` exists but `thread_id` is missing, send the init message
    `hello world from BB0` without `threadId` to create a new thread.
 4. If thread creation is rejected, clear both `auth_token` and `thread_id`, then

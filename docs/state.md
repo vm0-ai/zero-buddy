@@ -204,6 +204,9 @@ Some global state is also persisted because the device spends most of its time i
   - `last_msg_id` is restored only when `last_msg_thr` matches the effective
     current thread id, so switching or reprovisioning a thread does not reuse an
     old cursor.
+  - If a chat-thread read or send reports that the stored thread no longer
+    exists, firmware clears `thread_id`, `last_msg_id`, `last_msg_thr`, and the
+    stored assistant message queue before creating a replacement thread.
 
 Wi-Fi provisioning status is split between BLE advertising and GATT:
 

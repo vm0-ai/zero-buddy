@@ -70,9 +70,10 @@ All transitions are driven by the state machine. A mode must not directly mutate
   requests PMIC shutdown. The side RST/PWR button is then used to start setup
   again. A BLE client connection cancels this setup-session auto-shutdown while
   firmware waits for Wi-Fi credentials.
-  If battery is below 10%, firmware shows `low battery / charge` before turning
-  the screen off. If external power is present, firmware skips PMIC shutdown to
-  avoid an immediate wake/restart loop.
+  If battery is below 10% and no external power is present, firmware shows
+  `low battery / charge` and shuts down before starting BLE setup. If external
+  power is present, firmware skips PMIC shutdown to avoid an immediate
+  wake/restart loop.
 - Deep sleep wake remains owned by the configured RTC timer and BtnA wake source.
 
 ## Power Management

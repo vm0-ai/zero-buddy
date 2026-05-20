@@ -415,6 +415,16 @@ bool externalPowerConnected() {
       g_power_snapshot.charge_state == zero_buddy::power::ChargeState::Charging);
 }
 
+bool setupBatteryTooLowWithoutExternalPower() {
+  refreshPowerSnapshot(true);
+  const bool external_power = zero_buddy::externalPowerPresent(
+      g_power_snapshot.vbus_mv,
+      g_power_snapshot.charge_state == zero_buddy::power::ChargeState::Charging);
+  return !external_power &&
+         g_power_snapshot.battery_percent >= 0 &&
+         g_power_snapshot.battery_percent < kSetupLowBatteryPercent;
+}
+
 const char* modeRunErrorName(ModeRunError error) {
   switch (error) {
     case ModeRunError::None:
@@ -1544,6 +1554,29 @@ void shutdownFromSetupWifiIdle() {
   }
 }
 
+void shutdownFromSetupLowBattery() {
+  Serial.println("Setup blocked by low battery; shutting down");
+  stopBleProvisioning();
+  cancelCheckTimers();
+  setAssistantLedOff();
+  g_screen.render_screen_setup_status("low battery", "charge");
+  restartAwareDelay(1500);
+  g_screen.screenOff();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  Serial.flush();
+  delay(100);
+  if (g_pm1_ready && g_pm1.shutdown() == M5PM1_OK) {
+    while (true) {
+      delay(1000);
+    }
+  }
+  M5.Power.powerOff();
+  while (true) {
+    delay(1000);
+  }
+}
+
 bool waitForBleWifiCredentials() {
   if (!ensureBleProvisioningStarted()) {
     return false;
@@ -1598,6 +1631,10 @@ bool ensureWifiReady() {
   if (config.hasWifi() &&
       connectWifiCredentials(config.wifi_ssid, config.wifi_password, kWifiConnectAttemptMs, nullptr)) {
     return true;
+  }
+  if (setupBatteryTooLowWithoutExternalPower()) {
+    shutdownFromSetupLowBattery();
+    return false;
   }
   return provisionWifiOverBle();
 }
